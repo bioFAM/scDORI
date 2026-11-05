@@ -26,8 +26,7 @@ def load_gtf(gtf_path: Path) -> pd.DataFrame:
     """
     logger.info(f"Loading GTF from {gtf_path}")
     df = read_gtf(gtf_path)
-    gene_coordinates = pd.DataFrame(df)
-    gene_coordinates.columns = df.columns
+    gene_coordinates = df if isinstance(df, pd.DataFrame) else df.to_pandas()
     return gene_coordinates
 
 
@@ -67,7 +66,7 @@ def compute_hvgs_and_tfs(
     min_cells: int = 20,
 ) -> tuple[ad.AnnData, list[str], list[str]]:
     """
-    Compute sets of Highly Variable Genes (HVGs) and TFs (transcription factors) for scDoRI training.
+    Compute sets of Highly Variable Genes (HVGs) and TFs (transcription factors) for scDORI training.
 
     This function:
       1. Identifies user-specified genes and TFs present in `data_rna`.
@@ -88,7 +87,7 @@ def compute_hvgs_and_tfs(
         A list of user-specified TFs that must be included in the final set,
         default is None.
     num_genes : int, optional
-        Total number of HVGs (non-TFs) desired. Default is 3000.
+        Target total RNA features including TFs. Requested features take priority.
     num_tfs : int, optional
         Total number of TFs desired. Default is 300.
     min_cells : int, optional
@@ -123,6 +122,15 @@ def compute_hvgs_and_tfs(
     # 1) Validate user-specified lists
     valid_genes_user = list(set(data_rna.var_names).intersection(user_genes))
     valid_tfs_user = list(set(data_rna.var_names).intersection(user_tfs).intersection(tf_names))
+    missing_genes = sorted(set(user_genes) - set(data_rna.var_names))
+    missing_tfs = sorted(set(user_tfs) - set(data_rna.var_names))
+    missing_motifs = sorted((set(user_tfs) & set(data_rna.var_names)) - set(tf_names))
+    if missing_genes:
+        logger.warning("Requested genes absent after RNA filtering (not added): %s", missing_genes)
+    if missing_tfs:
+        logger.warning("Requested TFs absent after RNA filtering (not added): %s", missing_tfs)
+    if missing_motifs:
+        logger.warning("Requested TFs without matching motif names (not added as TFs): %s", missing_motifs)
 
     num_tfs_hvg = max(0, num_tfs - len(valid_tfs_user))
     num_genes_hvg = max(0, num_genes - len(valid_genes_user) - num_tfs)
@@ -130,18 +138,26 @@ def compute_hvgs_and_tfs(
     # 2) HVGs among TFs
     tf_candidates = sorted((set(tf_names) - set(valid_tfs_user)) & set(data_rna.var_names))
     data_rna_tf = data_rna[:, tf_candidates].copy()
-    sc.pp.normalize_total(data_rna_tf)
-    sc.pp.log1p(data_rna_tf)
-    sc.pp.highly_variable_genes(data_rna_tf, n_top_genes=num_tfs_hvg, subset=True)
+    if num_tfs_hvg and len(tf_candidates):
+        sc.pp.normalize_total(data_rna_tf)
+        sc.pp.log1p(data_rna_tf)
+        sc.pp.highly_variable_genes(data_rna_tf, n_top_genes=min(num_tfs_hvg, len(tf_candidates)), subset=True)
+    else:
+        data_rna_tf = data_rna_tf[:, :0].copy()
 
     selected_tfs = sorted(list(data_rna_tf.var_names) + valid_tfs_user)
 
     # 3) HVGs among non-TFs
     non_tf_candidates = set(data_rna.var_names) - set(selected_tfs) - set(valid_genes_user)
     data_rna_non_tf = data_rna[:, sorted(non_tf_candidates)].copy()
-    sc.pp.normalize_total(data_rna_non_tf)
-    sc.pp.log1p(data_rna_non_tf)
-    sc.pp.highly_variable_genes(data_rna_non_tf, n_top_genes=num_genes_hvg, subset=True)
+    if num_genes_hvg and len(non_tf_candidates):
+        sc.pp.normalize_total(data_rna_non_tf)
+        sc.pp.log1p(data_rna_non_tf)
+        sc.pp.highly_variable_genes(
+            data_rna_non_tf, n_top_genes=min(num_genes_hvg, len(non_tf_candidates)), subset=True
+        )
+    else:
+        data_rna_non_tf = data_rna_non_tf[:, :0].copy()
 
     selected_non_tfs = sorted(set(data_rna_non_tf.var_names).union(valid_genes_user))
     selected_non_tfs = [g for g in selected_non_tfs if g not in selected_tfs]
@@ -155,6 +171,11 @@ def compute_hvgs_and_tfs(
     # Mark gene_type in .var
     gene_types = ["HVG"] * len(final_genes) + ["TF"] * len(final_tfs)
     data_rna_processed.var["gene_type"] = gene_types
+    data_rna_processed.uns["scdori_requested_features"] = {
+        "genes_retained": sorted(valid_genes_user), "tfs_retained": sorted(valid_tfs_user),
+        "genes_missing_after_filtering": missing_genes, "tfs_missing_after_filtering": missing_tfs,
+        "tfs_without_motifs": missing_motifs,
+    }
 
     logger.info(f"Selected {len(final_genes)} HVGs + {len(final_tfs)} TFs.")
     return data_rna_processed, final_genes, final_tfs

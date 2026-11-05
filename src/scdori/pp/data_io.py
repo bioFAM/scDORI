@@ -4,6 +4,8 @@ from pathlib import Path
 import anndata as ad
 import scanpy as sc
 
+from scdori._sparse import prepare_count_matrix
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,7 +64,9 @@ def load_anndata(data_dir: Path, rna_file: str, atac_file: str) -> tuple[ad.AnnD
     return data_rna, data_atac
 
 
-def save_processed_datasets(data_rna: ad.AnnData, data_atac: ad.AnnData, out_dir: Path) -> None:
+def save_processed_datasets(
+    data_rna: ad.AnnData, data_atac: ad.AnnData, out_dir: Path, *, count_matrix_csr: bool = True
+) -> None:
     """
     Save processed RNA and ATAC AnnData objects with matching cell order.
 
@@ -74,6 +78,10 @@ def save_processed_datasets(data_rna: ad.AnnData, data_atac: ad.AnnData, out_dir
         The ATAC AnnData object, potentially subset or processed.
     out_dir : pathlib.Path
         The directory where the processed `.h5ad` files will be saved.
+    count_matrix_csr : bool, optional
+        Save CSC counts as CSR for faster cell-row reads (default True).
+        False preserves layout. Only the aligned copies are converted; the
+        caller's objects are unchanged. Conversion needs temporary host RAM.
 
     Returns
     -------
@@ -90,6 +98,9 @@ def save_processed_datasets(data_rna: ad.AnnData, data_atac: ad.AnnData, out_dir
     common_cells = data_rna.obs_names.intersection(data_atac.obs_names)
     data_rna = data_rna[common_cells].copy()
     data_atac = data_atac[common_cells].copy()
+
+    data_rna = prepare_count_matrix(data_rna, use_csr=count_matrix_csr)
+    data_atac = prepare_count_matrix(data_atac, use_csr=count_matrix_csr)
 
     # Save
     rna_path = out_dir / "rna_processed.h5ad"

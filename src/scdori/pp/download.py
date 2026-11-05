@@ -20,14 +20,25 @@ def download_file(url: str, out_path: Path) -> None:
     -------
     None
         If the file already exists, no download is performed. Otherwise, runs
-        a shell command with `wget` to fetch the file.
+        `wget` to fetch the file, and leaves no file behind if that fails.
     """
     if out_path.exists():
         logger.info(f"File already exists: {out_path}. Skipping download.")
         return
-    cmd = f"wget -O {out_path} {url}"
+    # wget creates its output file even when it fails. Download beside the target and move
+    # it only on success, so a failed or interrupted download cannot look like a finished one.
+    partial = out_path.with_name(out_path.name + ".part")
     logger.info(f"Downloading {url} -> {out_path}")
-    subprocess.run(cmd, shell=True, check=True)
+    try:
+        subprocess.run(["wget", "-O", str(partial), url], check=True)
+    except subprocess.CalledProcessError as error:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Could not download {url}. Check your connection and run this cell again. If the "
+            f"address no longer works, set the matching URL in the preprocessing settings, or "
+            f"place the file at {out_path} yourself."
+        ) from error
+    partial.replace(out_path)
 
 
 def unzip_gz(file_path: Path, remove_input: bool = False) -> None:
@@ -47,9 +58,8 @@ def unzip_gz(file_path: Path, remove_input: bool = False) -> None:
     None
         Decompresses the file in-place, leaving a new file without the `.gz` extension.
     """
-    cmd = f"gzip -d {file_path}"
     logger.info(f"Decompressing {file_path}")
-    subprocess.run(cmd, shell=True, check=True)
+    subprocess.run(["gzip", "-d", str(file_path)], check=True)
     if remove_input:
         gz_file = file_path
         if gz_file.exists():
@@ -98,7 +108,7 @@ def resolve_genome_urls(
                 "Gencode_mouse/release_M18/gencode.vM18.basic.annotation.gtf.gz"
             )
         if final_chrom_sizes_url is None:
-            final_chrom_sizes_url = "https://hgdownload.cse.ucsc.edu/goldenpath/mm10/bigZips/mm10.chrom.sizes"
+            final_chrom_sizes_url = "https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/mm10.chrom.sizes"
         if final_fasta_url is None:
             final_fasta_url = "https://hgdownload.soe.ucsc.edu/goldenPath/mm10/bigZips/mm10.fa.gz"
 
@@ -110,9 +120,9 @@ def resolve_genome_urls(
                 "Gencode_human/release_47/gencode.v47.primary_assembly.basic.annotation.gtf.gz"
             )
         if final_chrom_sizes_url is None:
-            final_chrom_sizes_url = "https://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.chrom.sizes"
+            final_chrom_sizes_url = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.chrom.sizes"
         if final_fasta_url is None:
-            final_fasta_url = "https://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.fa.gz"
+            final_fasta_url = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz"
 
     else:
         # Unknown assembly => user must provide or raise an error if any is None
