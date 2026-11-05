@@ -30,18 +30,20 @@ def plot_downstream_targets(rna_anndata, gene_list, score_name="target_score", l
     sc.pl.umap(rna_anndata, color=[score_name], layer=layer)
 
 
-def plot_topic_activation_heatmap(rna_anndata, groupby_key="celltype", aggregation="median"):
+def plot_topic_activation_heatmap(rna_anndata, groupby_key="celltype", aggregation="median", plot=True):
     """
-    Compute aggregated scDoRI latent topic activation across groups, then plot a clustermap.
+    Compute aggregated scDORI latent topic activation across groups, then plot a clustermap.
 
     Parameters
     ----------
     rna_anndata : anndata.AnnData
-        An AnnData object containing scDoRI latent factors in `obsm["X_scdori"]`.
+        An AnnData object containing scDORI latent factors in `obsm["X_scdori"]`.
     groupby_key : str, optional
         Column in `rna_anndata.obs` by which to group cells. Default is "celltype".
     aggregation : str, optional
         Either "median" or "mean" for aggregating factor values per group. Default is "median".
+    plot : bool, optional
+        Draw the default heatmap. Set False to obtain the table for a custom plot.
 
     Returns
     -------
@@ -61,7 +63,17 @@ def plot_topic_activation_heatmap(rna_anndata, groupby_key="celltype", aggregati
     else:
         df_grouped = df_latent.groupby(groupby_key).mean()
 
+    if not plot:
+        return df_grouped.T
+
     sns.set(font_scale=0.5)
-    g = sns.clustermap(df_grouped.T, cmap="RdBu_r", center=0, figsize=(8, 8))
+    sns.clustermap(
+        df_grouped.T,
+        cmap="RdBu_r",
+        center=0,
+        figsize=(8, 8),
+        row_cluster=df_grouped.shape[1] > 1,
+        col_cluster=len(df_grouped) > 1,
+    )
     plt.show()
     return df_grouped.T

@@ -6,7 +6,16 @@ from .dataloader import create_minibatch
 
 
 def get_latent_topics(
-    model, device, data_loader, rna_anndata, atac_anndata, num_cells, tf_indices, encoding_batch_onehot
+    model,
+    device,
+    data_loader,
+    rna_anndata,
+    atac_anndata,
+    num_cells,
+    tf_indices,
+    encoding_batch_onehot,
+    *,
+    return_indices=False,
 ):
     """
     Extract the softmaxed topic activations (theta) for each cell in the dataset.
@@ -14,7 +23,7 @@ def get_latent_topics(
     Parameters
     ----------
     model : torch.nn.Module
-        The scDoRI model containing an encoder for generating topic distributions.
+        The scDORI model containing an encoder for generating topic distributions.
     device : torch.device
         The PyTorch device (e.g., 'cpu' or 'cuda') used for computations.
     data_loader : torch.utils.data.DataLoader
@@ -30,48 +39,40 @@ def get_latent_topics(
     encoding_batch_onehot : np.ndarray
         One-hot encoding of batch information (cells x num_batches).
 
+    return_indices : bool, optional
+        Also return absolute cell indices aligned with the output rows.
+
     Returns
     -------
     np.ndarray
         A 2D NumPy array of shape (n_cells, n_topics) representing the softmaxed
         topic activations for each cell in the order given by the DataLoader.
     """
+    modes = {module: module.training for module in model.modules()}
     model.eval()
-    all_thetas = []
-
-    with torch.no_grad():
-        for batch_data in tqdm(data_loader, desc="Extracting latent topics"):
-            cell_indices = batch_data[0].to(device)
-
-            (input_matrix, tf_exp, library_size_value, num_cells_value, input_batch) = create_minibatch(
-                device, cell_indices, rna_anndata, atac_anndata, num_cells, tf_indices, encoding_batch_onehot
-            )
-
-            # Split into rna_input, atac_input, tf_input
-            rna_input = input_matrix[:, : model.num_genes]
-            atac_input = input_matrix[:, model.num_genes :]
-            tf_input = tf_exp
-
-            log_lib_rna = library_size_value[:, 0].reshape(-1, 1)
-            log_lib_atac = library_size_value[:, 1].reshape(-1, 1)
-            batch_onehot = input_batch
-
-            # We only need an encoder pass => e.g. use phase="warmup_1"
-            out = model(
-                rna_input,
-                atac_input,
-                tf_input,
-                tf_input,
-                log_lib_rna,
-                log_lib_atac,
-                num_cells_value,
-                batch_onehot,
-                phase="warmup_1",
-            )
-
-            # out["theta"] contains the softmaxed topic distribution
-            theta = out["theta"].detach().cpu().numpy()
-            all_thetas.append(theta)
-
-    latent_topics = np.concatenate(all_thetas, axis=0)
-    return latent_topics
+    all_thetas, all_indices = [], []
+    try:
+        with torch.no_grad():
+            for batch_data in tqdm(data_loader, desc="Extracting latent topics"):
+                cell_indices = batch_data[0].cpu()
+                inputs, _, libraries, cells, _ = create_minibatch(
+                    device, cell_indices, rna_anndata, atac_anndata, num_cells, tf_indices, encoding_batch_onehot
+                )
+                theta, _ = model.encode(
+                    inputs[:, : model.num_genes],
+                    inputs[:, model.num_genes :],
+                    libraries[:, :1],
+                    libraries[:, 1:],
+                    cells,
+                )
+                all_thetas.append(theta.cpu().numpy())
+                all_indices.append(cell_indices.numpy())
+    finally:
+        for module, training in modes.items():
+            module.training = training
+    if not all_thetas:
+        raise ValueError("Cannot extract topics from an empty data loader")
+    topics = np.concatenate(all_thetas)
+    if return_indices:
+        return topics, np.concatenate(all_indices)
+    return topics

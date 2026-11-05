@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from .data_io import save_model_weights
 from .dataloader import create_minibatch
+from .topic_penalties import topic_usage_penalties, validate_topic_penalties
 from .utils import log_nb_positive
 
 logger = logging.getLogger(__name__)
@@ -70,12 +71,12 @@ def compute_eval_loss_scdori(
     model, device, eval_loader, rna_anndata, atac_anndata, num_cells, tf_indices, encoding_batch_onehot, config_file
 ):
     """
-    Compute the validation loss for scDoRI.
+    Compute the validation loss for scDORI.
 
     Parameters
     ----------
     model : torch.nn.Module
-        The scDoRI model to evaluate.
+        The scDORI model to evaluate.
     device : torch.device
         The device (CPU or CUDA) used for PyTorch operations.
     eval_loader : torch.utils.data.DataLoader
@@ -145,22 +146,22 @@ def compute_eval_loss_scdori(
             loss_atac = criterion_poisson(preds_poisson, atac_input)
 
             # TF => NB
-            alpha_tf = torch.nn.functional.softplus(model.tf_alpha_nb).repeat(B, 1)
+            alpha_tf = torch.nn.functional.softplus(model.tf_alpha_nb)
             nb_tf_ll = log_nb_positive(tf_input, mu_nb_tf, alpha_tf).sum(dim=1).mean()
             loss_tf = -nb_tf_ll
 
             # RNA => NB
-            alpha_rna = torch.nn.functional.softplus(model.rna_alpha_nb).repeat(B, 1)
+            alpha_rna = torch.nn.functional.softplus(model.rna_alpha_nb)
             nb_rna_ll = log_nb_positive(rna_input, mu_nb_rna, alpha_rna).sum(dim=1).mean()
             loss_rna = -nb_rna_ll
 
             # Regularization
-            l1_norm_tf = torch.norm(model.topic_tf_decoder.data, p=1)
-            l2_norm_tf = torch.norm(model.topic_tf_decoder.data, p=2)
-            l1_norm_peak = torch.norm(model.topic_peak_decoder.data, p=1)
-            l2_norm_peak = torch.norm(model.topic_peak_decoder.data, p=2)
-            l1_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt.data, p=1)
-            l2_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt.data, p=2)
+            l1_norm_tf = torch.norm(model.topic_tf_decoder, p=1)
+            l2_norm_tf = torch.norm(model.topic_tf_decoder, p=2)
+            l1_norm_peak = torch.norm(model.topic_peak_decoder, p=1)
+            l2_norm_peak = torch.norm(model.topic_peak_decoder, p=2)
+            l1_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt, p=1)
+            l2_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt, p=2)
 
             loss_norm = (
                 config_file.l1_penalty_topic_tf * l1_norm_tf
@@ -205,7 +206,7 @@ def train_scdori_phases(
     config_file,
 ):
     """
-    Train the scDoRI model in two warmup phases:
+    Train the scDORI model in two warmup phases:
 
     The two phases are:
     1) Warmup Phase 1 (ATAC + TF focus).
@@ -215,7 +216,7 @@ def train_scdori_phases(
     Parameters
     ----------
     model : torch.nn.Module
-        The scDoRI model to be trained.
+        The scDORI model to be trained.
     device : torch.device
         The device (CPU or CUDA) for running PyTorch operations.
     train_loader : torch.utils.data.DataLoader
@@ -246,17 +247,25 @@ def train_scdori_phases(
     Returns
     -------
     torch.nn.Module
-        The trained scDoRI model after both warmup phases.
+        The trained scDORI model after both warmup phases.
     """
+    validate_topic_penalties(config_file)
     optimizer = torch.optim.Adam(model.parameters(), lr=config_file.learning_rate_scdori)
 
     best_eval_loss = float("inf")
     val_patience = 0
     max_val_patience = config_file.phase1_patience
+    previous_phase = None
+    # Notebook inspection only; not part of model state_dict or optimization.
+    model.phase1_history = []
 
-    logger.info("Starting scDoRI phase 1 training (module 1,2,3) with validation + early stopping.")
+    logger.info("Starting scDORI phase 1 training (module 1,2,3) with validation + early stopping.")
     for epoch in range(config_file.max_scdori_epochs):
         phase = get_phase_scdori(epoch, config_file)
+        if phase != previous_phase:
+            # Adding RNA changes the objective; losses across phases are not comparable.
+            best_eval_loss, val_patience = float("inf"), 0
+            previous_phase = phase
         weights = get_loss_weights_scdori(phase, config_file)
 
         model.train()
@@ -264,6 +273,7 @@ def train_scdori_phases(
         running_loss_atac = 0.0
         running_loss_tf = 0.0
         running_loss_rna = 0.0
+        running_topic_terms = {}
         nbatch = 0
 
         for batch_data in tqdm(train_loader, desc=f"Epoch {epoch} [{phase}]"):
@@ -308,24 +318,24 @@ def train_scdori_phases(
             loss_atac = criterion_poisson(preds_poisson, atac_input)
 
             # 2) TF => NB
-            alpha_tf = torch.nn.functional.softplus(model.tf_alpha_nb).repeat(B, 1)
+            alpha_tf = torch.nn.functional.softplus(model.tf_alpha_nb)
             nb_tf_ll = log_nb_positive(tf_input, mu_nb_tf, alpha_tf).sum(dim=1).mean()
             loss_tf = -nb_tf_ll
 
             # 3) RNA => NB
-            alpha_rna = torch.nn.functional.softplus(model.rna_alpha_nb).repeat(B, 1)
+            alpha_rna = torch.nn.functional.softplus(model.rna_alpha_nb)
             nb_rna_ll = log_nb_positive(rna_input, mu_nb_rna, alpha_rna).sum(dim=1).mean()
             loss_rna = -nb_rna_ll
 
             # Regularization
-            l1_norm_tf = torch.norm(model.topic_tf_decoder.data, p=1)
-            l2_norm_tf = torch.norm(model.topic_tf_decoder.data, p=2)
+            l1_norm_tf = torch.norm(model.topic_tf_decoder, p=1)
+            l2_norm_tf = torch.norm(model.topic_tf_decoder, p=2)
 
-            l1_norm_peak = torch.norm(model.topic_peak_decoder.data, p=1)
-            l2_norm_peak = torch.norm(model.topic_peak_decoder.data, p=2)
+            l1_norm_peak = torch.norm(model.topic_peak_decoder, p=1)
+            l2_norm_peak = torch.norm(model.topic_peak_decoder, p=2)
 
-            l1_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt.data, p=1)
-            l2_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt.data, p=2)
+            l1_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt, p=1)
+            l2_norm_gene_peak = torch.norm(model.gene_peak_factor_learnt, p=2)
 
             loss_norm = (
                 config_file.l1_penalty_topic_tf * l1_norm_tf
@@ -337,6 +347,10 @@ def train_scdori_phases(
             )
 
             total_loss = weights["atac"] * loss_atac + weights["tf"] * loss_tf + weights["rna"] * loss_rna + loss_norm
+
+            for name, term in topic_usage_penalties(out["theta"], config_file).items():
+                total_loss = total_loss + term
+                running_topic_terms[name] = running_topic_terms.get(name, 0.0) + term.item()
 
             optimizer.zero_grad()
             total_loss.backward()
@@ -356,6 +370,16 @@ def train_scdori_phases(
         epoch_loss_atac = running_loss_atac / max(1, nbatch)
         epoch_loss_tf = running_loss_tf / max(1, nbatch)
         epoch_loss_rna = running_loss_rna / max(1, nbatch)
+        history = {
+            "epoch": epoch,
+            "phase": phase,
+            "train_loss": epoch_loss,
+            "train_atac": epoch_loss_atac,
+            "train_tf": epoch_loss_tf,
+            "train_rna": epoch_loss_rna,
+        }
+        model.phase1_history.append(history)
+        history.update({f"train_{name}": value / max(1, nbatch) for name, value in running_topic_terms.items()})
 
         logger.info(
             f"[Train] Epoch={epoch}, Phase={phase}, Loss={epoch_loss:.4f}, "
@@ -380,6 +404,12 @@ def train_scdori_phases(
                 f"[Eval ] Epoch={epoch}, Phase={phase}, EvalLoss={eval_loss:.4f}, "
                 f"EvalAtac={eval_loss_atac:.4f}, EvalTF={eval_loss_tf:.4f}, EvalRNA={eval_loss_rna:.4f}"
             )
+            history.update(
+                validation_loss=eval_loss,
+                validation_atac=eval_loss_atac,
+                validation_tf=eval_loss_tf,
+                validation_rna=eval_loss_rna,
+            )
 
             # Early stopping based on eval_loss
             if eval_loss < best_eval_loss:
@@ -392,5 +422,5 @@ def train_scdori_phases(
                     logger.info(f"Validation loss not improving => early stop at epoch={epoch}")
                     break
 
-    logger.info("Finished scDoRI phase 1 training (module 1,2,3) with validation checks.")
+    logger.info("Finished scDORI phase 1 training (module 1,2,3) with validation checks.")
     return model

@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class scDoRI(nn.Module):
     """
-    The scDoRI model integrates single cell multi-ome RNA and ATAC data to learn latent topic representations and perform gene regulatory network (GRN) inference.
+    The scDORI model integrates single cell multi-ome RNA and ATAC data to learn latent topic representations and perform gene regulatory network (GRN) inference.
 
     This model contains:
     - **Encoders** for RNA and ATAC, producing a shared topic distribution.
@@ -105,6 +105,8 @@ class scDoRI(nn.Module):
         self.num_peaks = num_peaks
         self.num_tfs = num_tfs
         self.num_topics = num_topics
+        # Optional GRN-phase topic subset (original IDs); None uses all topics.
+        self.grn_topics = None
         self.num_batches = num_batches
         self.dim_encoder1 = dim_encoder1
         self.dim_encoder2 = dim_encoder2
@@ -217,6 +219,16 @@ class scDoRI(nn.Module):
         theta = F.softmax(mu_theta, dim=-1)
         return theta, mu_theta
 
+    def topic_gene_matrix(self, gene_peak=None):
+        """Compute the topic-to-gene decoder, retaining the reference reduction order."""
+        peaks = F.softmax(self.topic_peak_decoder, dim=1)
+        minimum, _ = torch.min(peaks, dim=0, keepdim=True)
+        maximum, _ = torch.max(peaks, dim=0, keepdim=True)
+        scaled = (peaks - minimum) / (maximum - minimum + 1e-8)
+        if gene_peak is None:
+            gene_peak = (self.gene_peak_factor_learnt * self.gene_peak_factor_fixed).T
+        return torch.mm(scaled, gene_peak)
+
     def forward(
         self,
         rna_input,
@@ -228,9 +240,11 @@ class scDoRI(nn.Module):
         num_cells,
         batch_onehot,
         phase="warmup_1",
+        *,
+        fixed_topic_gene=None,
     ):
         """
-        Forward pass through scDoRI, producing predictions for ATAC, TF, and RNA reconstructions (Phase 1), as well as GRN-based RNA predictions in GRN phase (Phase 2).
+        Forward pass through scDORI, producing predictions for ATAC, TF, and RNA reconstructions (Phase 1), as well as GRN-based RNA predictions in GRN phase (Phase 2).
 
         Parameters
         ----------
@@ -254,6 +268,9 @@ class scDoRI(nn.Module):
         phase : str, optional
             Which training phase: "warmup_1", "warmup_2", or "grn".
             If phase=="grn", the GRN-based RNA predictions are included.
+        fixed_topic_gene : torch.Tensor, optional
+            Precomputed topic-to-gene decoder for frozen, no-gradient evaluation.
+            The caller must rebuild it after changing phase 1 weights.
 
         Returns
         -------
@@ -291,18 +308,24 @@ class scDoRI(nn.Module):
         mu_nb_tf = preds_tf * library_factor_tf
 
         # 4) RNA from ATAC => library factor
-        topic_peak_denoised1 = F.softmax(self.topic_peak_decoder, dim=1)
-        topic_peak_min, _ = torch.min(topic_peak_denoised1, dim=0, keepdim=True)
-        topic_peak_max, _ = torch.max(topic_peak_denoised1, dim=0, keepdim=True)
-        topic_peak_denoised = (topic_peak_denoised1 - topic_peak_min) / (topic_peak_max - topic_peak_min + 1e-8)
-        gene_peak = (self.gene_peak_factor_learnt * self.gene_peak_factor_fixed).T
+        gene_peak = (self.gene_peak_factor_learnt * self.gene_peak_factor_fixed).T if phase == "grn" else None
         batch_factor_rna = torch.mm(batch_onehot, self.rna_batch_factor)
-        topicxgene = torch.mm(topic_peak_denoised, gene_peak)
+        if fixed_topic_gene is not None:
+            if (
+                torch.is_grad_enabled()
+                or self.training
+                or any(
+                    p.requires_grad
+                    for p in (self.topic_peak_decoder, self.gene_peak_factor_learnt, self.gene_peak_factor_fixed)
+                )
+            ):
+                raise ValueError("fixed_topic_gene requires frozen decoder parameters and no-gradient evaluation")
+            topicxgene = fixed_topic_gene
+        else:
+            topicxgene = self.topic_gene_matrix(gene_peak)
         rna_logits = torch.mm(theta, topicxgene) + batch_factor_rna
         rna_logits = self.rna_batch_norm(rna_logits)
         preds_rna = F.softmax(rna_logits, dim=-1)
-
-        topic_peak_denoised1 = nn.Softmax(dim=1)(self.topic_peak_decoder)
 
         # library MLP for RNA
         library_factor_rna = self.rna_library_factor(rna_input)
@@ -310,36 +333,39 @@ class scDoRI(nn.Module):
 
         # 5) GRN => preds_rna_from_grn if phase=="grn"
         if phase == "grn":
-            grn_atac_activator = torch.empty(size=(self.num_topics, self.num_tfs, self.num_genes)).to(self.device)
-            grn_atac_repressor = torch.empty(size=(self.num_topics, self.num_tfs, self.num_genes)).to(self.device)
+            topic_peak_denoised1 = F.softmax(self.topic_peak_decoder, dim=1)
+            topics = range(self.num_topics) if self.grn_topics is None else self.grn_topics.tolist()
+            grn_atac_activator = torch.empty(size=(len(topics), self.num_tfs, self.num_genes)).to(self.device)
+            grn_atac_repressor = torch.empty(size=(len(topics), self.num_tfs, self.num_genes)).to(self.device)
 
-            # Calculate ATAC-based TF–gene links (activator/repressor) for each topic
-            for topic in range(self.num_topics):
+            # Calculate ATAC-based TF–gene links (activator/repressor) for each (selected) topic
+            for i, topic in enumerate(topics):
                 topic_gene_peak = topic_peak_denoised1[topic][:, None] * gene_peak
                 G_topic = self.tf_binding_matrix_activator.T @ topic_gene_peak
                 G_topic = G_topic / (gene_peak.sum(axis=0, keepdims=True) + 1e-7)
-                grn_atac_activator[topic] = G_topic
+                grn_atac_activator[i] = G_topic
 
                 topic_gene_peak = (1 / (topic_peak_denoised1[topic] + 1e-20))[:, None] * gene_peak
                 G_topic = self.tf_binding_matrix_repressor.T @ topic_gene_peak
                 G_topic = G_topic / (gene_peak.sum(axis=0, keepdims=True) + 1e-7)
-                grn_atac_repressor[topic] = G_topic
+                grn_atac_repressor[i] = G_topic
 
-            C = torch.empty(size=(self.num_topics, self.num_genes)).to(self.device)
-            tf_expression_input = topic_tf_input.to(self.device)
-            for topic in range(self.num_topics):
-                gene_atac_activator_topic = grn_atac_activator[topic] / (grn_atac_activator[topic].max() + 1e-15)
-                gene_atac_repressor_topic = grn_atac_repressor[topic] / (grn_atac_repressor[topic].min() + 1e-15)
+            C = torch.empty(size=(len(topics), self.num_genes)).to(self.device)
+            tf_expression_input = topic_tf_input.to(self.tf_gene_topic_activator_grn)
+            for i, topic in enumerate(topics):
+                gene_atac_activator_topic = grn_atac_activator[i] / (grn_atac_activator[i].max() + 1e-15)
+                gene_atac_repressor_topic = grn_atac_repressor[i] / (grn_atac_repressor[i].min() + 1e-15)
 
                 G_act = gene_atac_activator_topic * torch.nn.functional.relu(self.tf_gene_topic_activator_grn[topic])
                 G_rep = (
                     gene_atac_repressor_topic * -1 * torch.nn.functional.relu(self.tf_gene_topic_repressor_grn[topic])
                 )
 
-                C[topic] = tf_expression_input[topic] @ G_act + tf_expression_input[topic] @ G_rep
+                C[i] = tf_expression_input[topic] @ G_act + tf_expression_input[topic] @ G_rep
 
             batch_factor_rna_grn = torch.mm(batch_onehot, self.rna_grn_batch_factor)
-            preds_rna_from_grn = torch.mm(theta, C)
+            # Excluded topics drop theta[:, excluded] @ C[excluded]; see scdori._core.topic_selection.
+            preds_rna_from_grn = torch.mm(theta if self.grn_topics is None else theta[:, topics], C)
             preds_rna_from_grn = preds_rna_from_grn + batch_factor_rna_grn
             preds_rna_from_grn = self.rna_grn_batch_norm(preds_rna_from_grn)
             preds_rna_from_grn = nn.Softmax(dim=1)(preds_rna_from_grn)
@@ -372,12 +398,12 @@ def initialize_scdori_parameters(
     phase="warmup",
 ):
     """
-    Initialize or freeze certain scDoRI parameters, preparing for either warmup or GRN phases.
+    Initialize or freeze certain scDORI parameters, preparing for either warmup or GRN phases.
 
     Parameters
     ----------
     model : torch.nn.Module
-        An instance of the scDoRI model.
+        An instance of the scDORI model.
     gene_peak_distance_exp : torch.Tensor
         Shape (num_genes, num_peaks). Peak-gene distance matrix, usually an exponential decay.
     gene_peak_fixed : torch.Tensor
@@ -388,8 +414,9 @@ def initialize_scdori_parameters(
         Shape (num_peaks, num_tfs). In silico ChIP-seq matrix for repressors.
     phase : str, optional
         "warmup" or "grn". In "warmup", sets gene-peak and TF-binding matrices,
-        and keeps them fixed or partially trainable. In "grn", enables TF-gene
-        parameters to be trainable.
+        and keeps them fixed or partially trainable. In "grn", sets the TF-binding
+        matrices when given, replacing any copy from a checkpoint, and enables
+        TF-gene parameters to be trainable.
 
     Returns
     -------
@@ -418,10 +445,23 @@ def initialize_scdori_parameters(
             model.tf_gene_topic_repressor_grn.requires_grad = False
 
         elif phase == "grn":
+            # A checkpoint stores the binding it was saved with; phase 2 must use the current inputs.
+            for name, binding in (("tf_binding_matrix_activator", insilico_act), ("tf_binding_matrix_repressor", insilico_rep)):
+                if binding is None:
+                    continue
+                parameter = getattr(model, name)
+                binding = torch.as_tensor(binding).to(parameter)
+                if binding.shape != parameter.shape:
+                    raise ValueError(f"{name}: inputs have shape {tuple(binding.shape)}, the model has {tuple(parameter.shape)}")
+                if not torch.equal(parameter.data, binding):
+                    logger.warning("%s differs from the loaded checkpoint; using the current inputs.", name)
+                parameter.data.copy_(binding)
             model.gene_peak_factor_fixed.requires_grad = False
+            model.tf_binding_matrix_activator.requires_grad = False
+            model.tf_binding_matrix_repressor.requires_grad = False
 
             # Enable fine-tuning of TF-gene links per topic
             model.tf_gene_topic_activator_grn.requires_grad = True
             model.tf_gene_topic_repressor_grn.requires_grad = True
 
-    print("scDoRI parameters (peak-gene distance & TF binding) initialized and relevant parameters frozen.")
+    print("scDORI parameters (peak-gene distance & TF binding) initialized and relevant parameters frozen.")
