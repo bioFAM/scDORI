@@ -5,7 +5,9 @@
 
 ![graphical abstract](https://raw.githubusercontent.com/bioFAM/scDoRI/refs/heads/main/docs/_static/scdori_schematic_main.png)
 
-**scDORI** is a deep learning model for single-cell **multiome** data (RNA + ATAC in same cell) that infers **enhancer-mediated gene regulatory networks (eGRNs)**. By combining an **encoder–decoder** approach with mechanistic constraints (enhancer–gene links, TF binding logic), scDoRI learns **topics** that group co-accessible peaks, their cis-linked genes and upstream activator and repressor TFs – all while scaling to large datasets via mini-batches.
+**scDORI** is a deep learning model for single-cell **multiome** data (RNA + ATAC in same cell) that infers **enhancer-mediated gene regulatory networks (eGRNs)**. By combining an **encoder–decoder** approach with mechanistic constraints (enhancer–gene links, TF binding logic), scDORI learns **topics** that group co-accessible peaks, their cis-linked genes and upstream activator and repressor TFs – all while scaling to large datasets via mini-batches.
+
+scDORI is described in [Saraswat et al., *Nature* 2026](https://www.nature.com/articles/s41586-026-11177-0).
 
 ## Highlights
 - 🔄 **Unified** approach: a single model for dimensionality reduction + eGRN inference
@@ -13,102 +15,123 @@
 - 🧬**Continuous eGRN modelling** : each cell is a mixture of topics, allowing the study of changes in GRNs. No need for predefined clusters
 - 🧰 **Scalable** to large datasets via **mini-batch training**
 
+## What's new in v2.0.0
+
+- **Faster phase 2:** the fixed phase-1 calculations are cached instead of being repeated for
+  every minibatch: **10.9× faster phase-2 training** in a matched single-cell benchmark
+  ([timings](#training-performance)).
+- **Regularisation now works:** in v1.0.0 the L1 and L2 penalties were computed on detached tensors,
+  so they never affected training.
+- **A clearer TF-expression rule:** a TF is compared with other TFs in a topic and with its own
+  expression in other topics, and it needs measured RNA in that topic's top cells.
+- **Review before continuing:** check topic use, cell maps and gene and TF programs after phase 1.
+- **Clearer notebooks:** the same three notebooks and one shared config, with fuller explanations of
+  how to read each result.
+
+**Upgrading from v1.0.0:** fitted results differ, so refit your data rather than comparing networks
+across versions. The [changelog](CHANGELOG.md) lists the new defaults and how to restore them.
+
 ## Input Requirements
 
 scDORI expects **single-cell multiome data** with the following inputs:
 
 - `RNA`: an AnnData `.h5ad` object with **cells × genes** expression matrix
 - `ATAC`: an AnnData `.h5ad` object with **cells × peaks** accessibility matrix
-  - Peaks must include genomic coordinates in `.var` (columns: `chr`, `start`, `end`)
+  - Name peaks as `chr:start-end` (for example `chr1:1000-1200`); preprocessing creates the coordinate columns from these names.
 
 These datasets must be paired — i.e., RNA and ATAC should come from the **same cells**. Make sure that **.X** of anndata objects contain raw counts.
 
 
 ## Installation
 
-To install all dependencies for scDoRI, we recommend using [Conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html) or [Micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html). The installation should take a couple of minutes.
-
+Use Python 3.10–3.12 in a fresh environment. Install PyTorch for your CPU or GPU
+using the [official selector](https://pytorch.org/get-started/locally/), then:
 
 ```bash
 git clone https://github.com/bioFAM/scDoRI.git
 cd scDoRI
-
-# create a new environment
-conda create -n scdori python=3.12 -y
-conda activate scdori
-
-# Install BEDTools dependencies, e.g., via conda (if not installed on your system)
-conda install --channel conda-forge --channel bioconda bedtools htslib -y
-
-# Install the scDoRI package
-pip install -e .
+python -m pip install -e '.[all]'
 ```
 
-Make sure the `-e` flag is used to install the package in editable mode.
+For training on processed data, `python -m pip install -e .` installs only the
+core dependencies. Optional extras separate preprocessing, plotting, notebooks
+and downstream integrations. Editable mode is optional.
 
-The training process is GPU-accelerated and **highly recommended** to be run on a GPU-enabled machine. While preprocessing can run on CPU, training large datasets on CPU is not advised due to slow performance. If a GPU is available, the GPU-accelerated version will be installed automatically.
-GPU memory scales with the number of selected features; as a guide, a GPU with 12–15 GB of memory supports ~4,000 genes, 70,000 peaks and 300 TFs. Larger feature sets require proportionally more memory. 
+The [setup guide](docs/installation.md) gives the complete installation steps,
+including BEDTools for preprocessing and GPU setup.
 
-**Software dependencies:** Python 3.12; BEDTools and HTSlib (installable via conda/bioconda, see below); all Python dependencies and their pinned versions are listed in `pyproject.toml` and installed automatically by `pip install -e .`.
+**Hardware.** Training is GPU-accelerated and **highly recommended** on a GPU-enabled machine. While
+preprocessing can run on CPU, training large datasets on CPU is not advised due to slow performance.
+GPU memory scales with the number of selected features; as a guide, a GPU with 12–15 GB of memory
+supports ~4,000 genes, 70,000 peaks and 300 TFs. Larger feature sets require proportionally more memory.
 
 
 ## Usage
-You’ll work through three notebooks - Preprocessing, Training and Downstream analysis. This will require two separate config files to set parameters for your dataset preprocessing and training.
-### Step 1: Preprocessing
-#### Edit paths and parameters in:
+Use the same three notebooks: **Preprocessing → Training → Downstream analysis**.
+For a new project, copy the shared configuration template into the repository root:
+
 ```bash
-src/scdori/pp/config.py
+cp configs/scdori.example.json scdori_config.json
+python -m jupyter lab
 ```
-to specify the location of RNA and ATAC anndata .h5ad files, motif file, and set number of peaks/genes/TFs to train on.
 
+Edit the data/reference paths and parameters in `scdori_config.json`, then open
+the notebooks below in order. All three find that file from the repository root
+or a notebook subdirectory. Relative paths resolve beside the config file.
+Preprocessing output paths feed training automatically unless overridden, and
+downstream uses the same training settings/checkpoint location.
 
-#### Run preprocessing notebook
-```bash
-docs/notebooks/preprocessing.ipynb
-```
-This step can take between a few hours to a day depending on the dataset size and number of features selected.
+| Step | Notebook | What you will do | What you get |
+| --- | --- | --- | --- |
+| 1 | [Preprocessing](docs/notebooks/preprocessing.ipynb) | Select genes, TFs and peaks; prepare binding scores and peak–gene information. | Preprocessed RNA and ATAC AnnData objects, in-silico ChIP-seq TF–peak matrices and gene–peak distance matrices. |
+| 2 | [Training](docs/notebooks/training.ipynb) | Learn topics, inspect their cell and gene patterns, then learn the networks. | A trained checkpoint, topic activities and topic–peak, topic–gene and topic–TF matrices. |
+| 3 | [Downstream](docs/notebooks/downstream.ipynb) | Explore programs, enriched gene sets, TF targets, repressors and linked regions. | Topic-specific eGRNs, TF activity scores, tables and figures. |
 
-**Expected output:** preprocessed RNA and ATAC AnnData objects, the in-silico ChIP-seq TF–peak matrices and gene-peak distance matrices, written to the output paths set in `config.py`.
+**Run All trains both phases.** To inspect topics first, set `RUN_PHASE2=False`
+near the top of training. After reviewing the plots, continue from the phase-2
+section without repeating phase 1. Almost-unused topics are skipped to make
+phase 2 faster; `grn_topic_selection="all"` keeps them.
 
-### Step 2: Training
+Each notebook explains the choices where they are used. The
+[settings reference](docs/notebook_settings.md) brings them together if you want
+to compare settings. The original Python configs still work when no JSON config
+is selected: `src/scdori/pp/config.py` and `src/scdori/_core/config.py`.
 
-#### Edit paths and parameters in:
-```bash
-src/scdori/_core/config.py
-```
-for scDoRI hyperparameters (number of topics, learning rate, epochs etc.) and specify path for preprocessed anndata objects and insilico-chipseq files
+## Choosing settings and checking results
 
-#### Run training notebook
-```bash
-docs/notebooks/training.ipynb
-```
-This step again can take between a few hours to a day depending on the dataset size and number of features selected.
-
-**Expected output:** a trained scDoRI model checkpoint and the learned latent Topic activities, topic–peak, topic–gene and topic–TF matrices.
-
-### Step 3: Downstream analysis
-
-#### Run downstream analysis notebook
-```bash
-docs/notebooks/downstream.ipynb
-```
-**Expected output:** topic-specific eGRNs, TF activity scores, and the downstream tables and visualisations described in the documentation.
+- The [hyperparameter guide](docs/training_guide.rst) helps you choose features, topics, regularisation
+  and training length. A recommended starting point is `#topics = expected number of cell types + 10`.
+- [Best practices](docs/best_practices.md) shows how far results change between fits. Repeating phase 2
+  keeps top links almost unchanged, but training phase 1 again reorders them. If your conclusions rest
+  on particular targets or one topic, train phase 1 with several seeds and report what recurs.
 
 ## Dataset Demonstration
 
 The provided notebooks use the **mouse gastrulation dataset** from:
 
 📄 Paper: [Argelaguet et al., Bioarxiv 2022](https://www.biorxiv.org/content/10.1101/2022.06.15.496239v1)
-📦 Download: [Dropbox link](https://www.dropbox.com/scl/fo/9inmw43pz2bygtqepxl82/ALeeNjuEqw4qp0L9Z9t71xo/data/processed?rlkey=5ihgkvafegkke9jnldlnhw1x6&subfolder_nav_tracking=1&st=cixvwynt&dl=0)
+📦 Download: [Dropbox link](https://www.dropbox.com/scl/fo/9inmw43pz2bygtqepxl82/ALeeNjuEqw4qp0L9Z9t71xo/data/processed?rlkey=5ihgkvafegkke9jnldlnhw1x6&subfolder_nav_tracking=1&st=cixvwynt&dl=0). The whole folder is about 79 GB as one download; preprocessing needs only `anndata.h5ad` and `PeakMatrix_anndata.h5ad`.
+
+See the [completed single-cell example](docs/gastrulation_example.md) for its phase-1 topic plots, TF rankings
+and target genes, and what to inspect at each step.
+
+## Training performance
+
+Caching makes phase 2 **10.9× faster** on the mouse gastrulation example (56,861 cells, one RTX 4090), without changing the fit beyond rounding.
+
+![Frozen phase-2 training time: 14.96 hours without caching and 1.38 hours with caching, using the same phase-1 checkpoint.](docs/_static/benchmarks/gastrulation_20260925/scdori_timing_benchmark.png)
+
+At the current defaults, a whole run on this example took **3 to 5 hours**. See the [training time page](docs/gastrulation_benchmark.md).
 
 ## Configuration Notes
 
-`preprocessing_pipeline/config.py` provides flexible options:
+The shared JSON `preprocessing` section (or `src/scdori/pp/config.py`) provides flexible options:
 
 - You can **set the number of peaks, genes, and TFs** to use for model training
   - 💡 Tip: Adjust based on your available **GPU memory**
-- You can also **force inclusion of specific genes or TFs**, even if they aren’t highly variable
+- You can also **retain specific genes, TFs or peaks**, even if they aren’t highly variable
   - Useful for focusing on known regulators/ genes of interest
+  - See [settings and retention rules](docs/notebook_settings.md#keep-genes-tfs-and-peaks-you-choose) for matching names, motif requirements and when to rerun preprocessing
 
 ## Documentation
 📖 Full documentation and API reference is hosted at: https://scdori.readthedocs.io/en/latest/
@@ -117,8 +140,12 @@ Includes:
 - API reference (docstrings)
 - In-depth method overview
 - Preprocessing + training guides
-- (upcoming) Customization tips
+- [Hyperparameter guide](docs/training_guide.rst): features, topics, regularisation, training length
+- [Best practices](docs/best_practices.md): repeating fits, keeping common links, rare cell types
 
 ## Citation
-If you use scDoRI in your work, please cite our [preprint](https://www.biorxiv.org/content/10.1101/2025.05.13.653733v1).
+If you use scDORI in your work, please cite our [paper](https://www.nature.com/articles/s41586-026-11177-0):
+
+Saraswat, M. et al. Decoding the regulatory programs governing glioblastoma plasticity. *Nature* (2026). https://doi.org/10.1038/s41586-026-11177-0
+
 Feel free to open an issue or get in touch at manu.saraswat@dkfz.de

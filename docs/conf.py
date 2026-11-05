@@ -92,6 +92,8 @@ intersphinx_mapping = {
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
+# Read the Docs installs the doc extra only; these optional extras are needed to import parts of the API.
+autodoc_mock_imports = ["decoupler", "gtfparse", "harmonypy", "leidenalg", "scanpy", "seaborn", "tangermeme", "umap"]
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -103,7 +105,7 @@ html_theme = "sphinx_book_theme"
 html_static_path = ["_static"]
 html_css_files = ["css/custom.css"]
 
-html_title = project_name
+html_title = "scDORI"
 
 html_theme_options = {
     "repository_url": repository_url,
