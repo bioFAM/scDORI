@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def run_scdori_pipeline():
     """
-    Run the scDoRI pipeline in three main phases.
+    Run the scDORI pipeline in three main phases.
 
     The main phases are:
     1) ATAC+TF warmup (phase 1 warmup),
@@ -30,7 +30,7 @@ def run_scdori_pipeline():
     1. Configure logging, set random seed, determine computing device.
     2. Load data: RNA/ATAC AnnData, gene-peak distances, in silico ChIP-seq embeddings.
     3. Split cells into train and eval sets, create DataLoaders.
-    4. Build and initialize the scDoRI model:
+    4. Build and initialize the scDORI model:
        - The model is configured with the number of genes, peaks, TFs, and topics.
        - Initialize parameters (gene-peak, in silico matrices, etc.).
     5. Train phases 1 & 2 (integrated ATAC + TF, then add RNA).
@@ -41,7 +41,7 @@ def run_scdori_pipeline():
     Returns
     -------
     None
-        The pipeline executes end-to-end training of the scDoRI model,
+        The pipeline executes end-to-end training of the scDORI model,
         saving intermediate and final weights to disk as specified in `config`.
 
     Notes
@@ -53,7 +53,7 @@ def run_scdori_pipeline():
       and `config.weights_folder_grn`.
     """
     logging.basicConfig(level=config.logging_level)
-    logger.info("Starting scDoRI pipeline with integrated GRN.")
+    logger.info("Starting scDORI pipeline with integrated GRN.")
     set_seed(config.random_seed)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -106,4 +106,4 @@ def run_scdori_pipeline():
     model = train_model_grn(model, device, train_loader, eval_loader)
     save_model_weights(model, Path(config.weights_folder_grn), "grn_final")
 
-    logger.info("All phases complete. scDoRI pipeline done.")
+    logger.info("All phases complete. scDORI pipeline done.")

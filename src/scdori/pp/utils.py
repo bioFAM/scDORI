@@ -35,7 +35,7 @@ def create_extended_gene_bed(
     Returns
     -------
     pd.DataFrame
-        A DataFrame with columns ["chr", "start_new", "end_new", "gene_name", "strand"]
+        A DataFrame with columns ["chr", "start_new", "end_new", "gene_name", "score", "strand"]
         representing the extended regions for each gene.
 
     Notes
@@ -66,7 +66,8 @@ def create_extended_gene_bed(
         end_ = row["end"]
         strand_ = row["strand"] if "strand" in row else "+"
 
-        start_extended = max(0, start_ - window_size)
+        # GTF starts are 1-based inclusive; BED starts are 0-based.
+        start_extended = max(0, start_ - 1 - window_size)
         end_extended = end_ + window_size
 
         if chr_ in chrom_dict:
@@ -75,9 +76,9 @@ def create_extended_gene_bed(
                 end_extended = chr_len
             # start_extended already clamped to 0 above
 
-        extended_rows.append([chr_, start_extended, end_extended, gene, strand_])
+        extended_rows.append([chr_, start_extended, end_extended, gene, 0, strand_])
 
-    df_extended = pd.DataFrame(extended_rows, columns=["chr", "start_new", "end_new", "gene_name", "strand"])
+    df_extended = pd.DataFrame(extended_rows, columns=["chr", "start_new", "end_new", "gene_name", "score", "strand"])
     return df_extended
 
 
@@ -96,7 +97,7 @@ def compute_gene_peak_distance_matrix(
         - 0 if the peak midpoint is within gene-body or promoter (5kb upstream of TSS by default),
         e.g., if on the "+" strand and midpoint is between (start - 5000) and end => distance=0.
         If on the "-" strand and midpoint is between start and (end + 5000) => distance=0.
-        - Otherwise, distance = min(|mid - start|, |mid - end|).
+        - Otherwise, distance = min(abs(mid - start), abs(mid - end)).
         - If the chromosome of the gene != chromosome of the peak => distance = -1.
 
     Parameters

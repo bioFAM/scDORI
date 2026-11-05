@@ -2,8 +2,29 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 
+from scdori._counts import as_fragment_counts, resolve_atac_count_mode
 
-def create_minibatch(device, index_matrix, rna_anndata, atac_anndata, num_cells, tf_indices, encoding_batch_onehot):
+
+def read_count_rows(adata, indices):
+    """Read count rows without annotation copies, preserving order and duplicates."""
+    if adata.isbacked:
+        # HDF5 needs sorted, unique indices; reconstruct the requested sequence.
+        unique, inverse = np.unique(indices, return_inverse=True)
+        return adata[unique, :].X[inverse]
+    return adata.X[indices]
+
+
+def create_minibatch(
+    device,
+    index_matrix,
+    rna_anndata,
+    atac_anndata,
+    num_cells,
+    tf_indices,
+    encoding_batch_onehot,
+    *,
+    atac_count_mode=None,
+):
     """
     Create a minibatch of required input tensors using integer indices of cells.
 
@@ -25,6 +46,10 @@ def create_minibatch(device, index_matrix, rna_anndata, atac_anndata, num_cells,
     encoding_batch_onehot : np.ndarray
         A one-hot encoded matrix representing batch information for each cell (cells x num_batches).
 
+    atac_count_mode : {"insertions", "fragments"}, optional
+        Uses saved ``scdori_atac_count_mode`` metadata when available, otherwise
+        legacy insertion counts. Fragment counts and means are preserved.
+
     Returns
     -------
     tuple
@@ -40,20 +65,24 @@ def create_minibatch(device, index_matrix, rna_anndata, atac_anndata, num_cells,
     Notes
     -----
     - This function converts sparse arrays to dense if necessary.
-    - ATAC counts are converted from insertion counts to fragment counts by using (x + 1) // 2.
+    - Insertion counts use (x + 1) // 2; fragment counts are unchanged.
     """
-    index_train = index_matrix.clone().detach().cpu().numpy()
-    atac_input = atac_anndata[index_train, :].X
-    rna_input = rna_anndata[index_train, :].X
+    index_train = index_matrix.detach().cpu().numpy()
+    mode = resolve_atac_count_mode(atac_anndata, atac_count_mode)
+    # Avoid constructing AnnData views (and slicing annotations) in the hot path.
+    atac_input = read_count_rows(atac_anndata, index_train)
+    atac_input = as_fragment_counts(atac_input, mode)
+    rna_input = read_count_rows(rna_anndata, index_train)
 
     if sp.issparse(atac_input):
-        atac_input = atac_input.toarray()
+        atac_input = atac_input.toarray(order="C")
     if sp.issparse(rna_input):
-        rna_input = rna_input.toarray()
+        rna_input = rna_input.toarray(order="C")
 
-    # Convert ATAC insertions to fragment counts
-    atac_input = (np.array(atac_input) + 1) // 2
-    rna_input = np.array(rna_input)
+    # CSC defaults to column-major dense arrays, CSR to row-major. Use the same
+    # memory order so reductions and tensor kernels do not depend on sparse layout.
+    atac_input = np.ascontiguousarray(atac_input)
+    rna_input = np.ascontiguousarray(rna_input)
 
     library_size_atac = atac_input.sum(axis=1).reshape(-1, 1) + 1e-8
     library_size_rna = rna_input.sum(axis=1).reshape(-1, 1) + 1e-8

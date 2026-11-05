@@ -220,6 +220,7 @@ def run_bedtools_intersect(a_bed: Path, b_bed: Path, out_bed: Path) -> None:
         Writes a new BED file to `out_bed` containing only intervals from A
         that intersect with B at least once (option -u -wa).
     """
-    cmd = f"bedtools intersect -u -wa -a {a_bed} -b {b_bed} > {out_bed}"
+    cmd = ["bedtools", "intersect", "-u", "-wa", "-a", str(a_bed), "-b", str(b_bed)]
     logger.info(f"Running: {cmd}")
-    subprocess.run(cmd, shell=True, check=True)
+    with open(out_bed, "w") as output:
+        subprocess.run(cmd, stdout=output, check=True)

@@ -1,81 +1,60 @@
 .. _method_overview:
 
-===========================================
-Model Overview & Architecture
-===========================================
+How scDORI learns topics and networks
+=====================================
+
+scDORI combines RNA and ATAC measurements from the same cells. It learns topics:
+patterns of accessible DNA and gene expression that cells can share. Each cell
+uses a mixture of topics, allowing a program to vary across a population rather
+than assigning every cell to a single group. The paper describes the model in full
+:cite:p:`Saraswat_2026`.
 
 .. image:: _static/Supp_fig_2_1_v6_crop.png
    :align: center
    :width: 100%
-   :alt: scDoRI Architecture and Training Overview
+   :alt: The two training phases and four modules of scDORI
 
-**scDoRI** (single-cell Deep Multi-Omic Regulatory Inference) is a computational framework that jointly models paired single-cell RNA-seq and ATAC-seq profiles to infer **enhancer-mediated gene regulatory networks (eGRNs)**. Unlike existing pipelines that treat dimensionality reduction and regulatory inference as distinct modules, scDoRI unifies them in a single encoder--decoder architecture grounded in biological priors.
-
-At its core, the model learns **topics** -- regulatory modules that link co-accessible chromatin regions, their cis-mediated target genes, and upstream activator and repressor transcription factors (TFs). Each cell is represented as a **probabilistic mixture over topics**, allowing for a continuous and interpretable view of transcriptional regulation.
-
-Architectural Components
+Phase 1: learn the topics
 -------------------------
 
-scDoRI consists of two primary components:
+The encoder converts each cell's RNA and ATAC profiles into topic weights. The
+weights sum to one for each cell. Three parts of the model then use those topics
+to describe the measured data:
 
-**Encoder**
-^^^^^^^^^^
+- **Module 1** learns which accessible peaks belong to each topic.
+- **Module 2** connects peaks to nearby genes and uses predicted accessibility
+  to describe gene expression.
+- **Module 3** learns the TF-expression pattern of each topic.
 
-- Projects high-dimensional RNA and ATAC profiles into a shared latent topic space.
-- Comprised of parallel neural networks (one each for RNA and ATAC), with outputs concatenated and mapped into topic logits.
-- Final output is a topic mixture vector for each cell, constrained via a softmax activation (topics sum up to 1 per cell).
+Training begins with ATAC and TF expression, then adds the remaining RNA
+expression. The notebook shows cell maps, topic use and gene/TF programs after
+this phase. Cell-type labels help interpret the plots but are not required to
+fit these topics.
 
-**Decoder**
-^^^^^^^^^^
+Phase 2: learn regulatory networks
+----------------------------------
 
-The decoder reconstructs observed data modalities from the shared latent topic space, enforcing biologically constrained logic through four modules:
+**Module 4** combines the learned topics and peak–gene weights with the predicted
+TF-binding information prepared during preprocessing. It learns activating and
+repressive TF–gene contributions for each topic and uses them to describe RNA
+expression.
 
-**Module 1: ATAC Reconstruction**
+Phase-1 weights stay fixed by default. Their calculations are cached for reuse,
+and almost-unused topics are skipped to make training faster. The notebook lets
+you retain all topics instead.
 
-- Reconstructs peak accessibility using a topic--peak weight matrix.
-- Includes batch-specific offsets to account for experimental variability.
-- Applies L1 regularization on topic--peak weights to encourage sparsity for interpretability.
+TF expression contributes to each topic's network. The default averages two
+scaled comparisons: a TF against other TFs in that topic, and the same TF across
+topics. Values below ``0.2`` are set to zero, and a TF must also have RNA in 2% of the
+topic's top cells. This can retain lower-expression TFs that are more specific to a
+program. The same expression values are used for
+activating and repressive contributions.
 
-**Module 2: RNA-from-ATAC Prediction**
+After training
+--------------
 
-- Reconstructs gene expression based on predicted chromatin accessibility from Module 1.
-- Employs a learnable gene--peak linkage matrix, constrained by genomic proximity (e.g., peaks within 150kb of the gene).
-
-**Module 3: TF Expression Reconstruction**
-
-- Learns topic-to-TF expression mappings, allowing the latent space to capture transcription factor expression programs.
-
-**Module 4: Signed TF--Gene Network Inference**
-
-- Computes signed topic-specific TF--gene links by integrating:
-
-  - Precomputed TF--peak motif scores (activators and repressors)
-  - Topic-wise chromatin accessibility
-  - Gene--peak associations
-  - Topic-level TF expression
-
-- Refines scores using a learnable 3D TF--gene--topic matrix.
-- Produces a final **signed GRN**, used to reconstruct gene expression from TF expression per topic (Module 3).
-
-Training Phases
----------------
-
-**Phase 1: Topic Construction**
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-- The encoder and Modules 1--3 are trained jointly using multimodal reconstruction losses.
-- Peak accessibility, gene expression, and TF expression are reconstructed from latent topics.
-- Objective functions include Poisson likelihood loss (ATAC) and Negative Binomial likelihood loss (RNA), with regularization to promote sparsity and interpretability.
-
-**Phase 2: GRN Refinement**
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-- Module 4 is introduced to learn topic-specific GRNs from chromatin context, peak - gene links and TF- peak links (from insilico-ChIP-seq, introduced in https://www.biorxiv.org/content/10.1101/2022.06.15.496239v1).
-- Adds trainable activator/repressor TF--gene link matrices per topic.
-- Predicts RNA from TF expression using inferred GRNs.
-- Earlier modules can optionally be frozen to preserve previously learned topic representations.
-
-Schematic Overview
-------------------
-
-The figure above provides a schematic overview of the scDoRI model. Modules are color-coded by training phase, and matrix roles are explicitly annotated. Phase 1 involves joint training of the encoder and Modules 1--3. Phase 2 fine-tunes Module 4 to enable topic-specific GRN inference.
+The downstream notebook explores gene and peak programs, compares chromatin
+support with shuffled binding scores, and combines this support with the learned
+TF–gene weights. It then shows TF rankings, targets and gene-linked regions.
+A TF can have different targets in different topics; the notebook supports
+comparing these contexts as well as following one topic in detail.
