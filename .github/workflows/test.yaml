@@ -2,11 +2,15 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
     branches: [main]
+  workflow_dispatch:
   schedule:
-    - cron: "0 5 1,15 * *"
+    - cron: '0 5 1,15 * *'
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,49 +18,59 @@ concurrency:
 
 defaults:
   run:
-    # to fail on error in multiline statements (-e), in pipes (-o pipefail), and on unset variables (-u).
     shell: bash -euo pipefail {0}
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
-
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python: "3.10"
-          - os: ubuntu-latest
-            python: "3.12"
-          - os: ubuntu-latest
-            python: "3.12"
-            pip-flags: "--pre"
-            name: PRE-RELEASE DEPENDENCIES
-
-    name: ${{ matrix.name }} Python ${{ matrix.python }}
-
+        python: ['3.10', '3.12']
+    name: Python ${{ matrix.python }} clean install and tests
     env:
-      OS: ${{ matrix.os }}
-      PYTHON: ${{ matrix.python }}
-
+      MPLBACKEND: agg
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMBA_NUM_THREADS: '1'
     steps:
       - uses: actions/checkout@v4
         with:
-          filter: blob:none
           fetch-depth: 0
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
         with:
-          cache-dependency-glob: pyproject.toml
-      - name: run tests using hatch
-        env:
-          MPLBACKEND: agg
-          PLATFORM: ${{ matrix.os }}
-          DISPLAY: :42
-        run: uvx hatch test --cover --python ${{ matrix.python }}
-      - name: generate coverage report
-        run: uvx hatch run hatch-test.py${{ matrix.python }}:coverage xml
+          python-version: ${{ matrix.python }}
+      - name: Install CPU PyTorch and build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m build
+          python -m pip install dist/*.whl pytest coverage
+          python -m pip check
+      - name: Test core without optional dependencies
+        run: |
+          python -c "import importlib.util; assert importlib.util.find_spec('scanpy') is None"
+          python -m pytest -q tests/test_imports.py tests/test_utils.py tests/test_frozen_grn.py tests/test_dataloader.py
+      - name: Install extras and test full package
+        run: |
+          wheel=(dist/*.whl)
+          python -m pip install "${wheel[0]}[all,test]"
+          python -m pip check
+          python -m coverage run -m pytest -q
+          python -m coverage xml
+      - name: Execute original notebook workflow on synthetic raw data
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bedtools
+          python benchmarks/validate_notebook_workflow.py --out "$RUNNER_TEMP/scdori-notebooks"
+      - name: Upload notebook execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-validation-py${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/scdori-notebooks/completion.json
+            ${{ runner.temp }}/scdori-notebooks/*/executed.ipynb
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:

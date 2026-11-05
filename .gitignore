@@ -14,7 +14,16 @@ __pycache__/
 # Tests and coverage
 /data/
 /node_modules/
+/scdori_config.json
+/results/
+/references/
 
 # docs
 /docs/generated/
 /docs/_build/
+
+# Written by the build from the git tag
+/src/scdori/_version.py
+
+# Written when the notebooks run
+/docs/notebooks/figures/

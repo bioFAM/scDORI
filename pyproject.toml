@@ -4,7 +4,7 @@ requires = [ "hatch-vcs", "hatchling" ]
 
 [project]
 name = "scdori"
-version = "0.0.1"
+dynamic = [ "version" ]
 description = "scDoRI (single-cell Deep multi-Omic Regulatory Inference) is a deep learning model to infer enhancer-mediated gene regulatory networks (eGRNs) from single-cell multiome data (RNA + ATAC)."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -14,34 +14,46 @@ maintainers = [
 authors = [
   { name = "Manu Saraswat", email = "manu.saraswat10@gmail.com" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "anndata",
-  "gtfparse",
-  "harmonypy",
-  "numpy<2",
-  "pandas",
-  "scanpy",
-  "scikit-learn",
-  "scipy",
-  "seaborn",
-  "tangermeme>=0.4.0,<0.5",
-  "umap-learn",
-  "session-info2",  # for debug logging (referenced from the issue template)
-  "torch",
+  "anndata>=0.10,<0.12",
+  "numpy>=1.24,<2",
+  "pandas>=1.5,<3",  # AnnData 0.11 cannot write pandas 3 ArrowStringArray metadata
+  "scikit-learn>=1.2",
+  "scipy>=1.10,<1.17",  # AnnData 0.11 backed sparse indexing uses removed SciPy internals
+  "torch>=2.1",
   "tqdm",
+]
+optional-dependencies.preprocessing = [
+  "gtfparse>=2.5,<3", # 2.8.1 produced the published example; 3.x is not checked on real data
+  "pyarrow<26", # pyarrow 26 needs NumPy 2, and scDORI pins NumPy <2
+  "pynndescent<0.7", # scanpy 1.11 calls getnnz, which the sparse arrays from pynndescent 0.7 lack
+  "harmonypy>=0.0.10,<0.1", # Scanpy 1.10/1.11 expects the original Z_corr orientation
+  "scanpy>=1.10,<1.12",
+  "tangermeme>=0.4.0,<0.5",
+  "leidenalg",
+]
+optional-dependencies.plot = [
+  "matplotlib",
+  "pynndescent<0.7", # scanpy 1.11 calls getnnz, which the sparse arrays from pynndescent 0.7 lack
+  "scanpy>=1.10,<1.12",
+  "seaborn",
+  "umap-learn",
+]
+optional-dependencies.notebook = [
   "ipykernel",
   "ipython",
   "jupyter",
-  "decoupler",
-  "leidenalg"
+  "session-info2",
+]
+optional-dependencies.all = [
+  "scdori[preprocessing,plot,notebook,downstream]",
 ]
 optional-dependencies.dev = [
   "pre-commit",
@@ -64,8 +76,8 @@ optional-dependencies.doc = [
   "sphinxext-opengraph",
 ]
 optional-dependencies.downstream = [
-  "decoupler",
-  "liana",
+  "scdori[plot]",
+  "decoupler>=1.8,<1.9", # notebook uses the v1 API and NumPy <2
 ]
 optional-dependencies.test = [
   "coverage",
@@ -81,6 +93,7 @@ version-file = "src/scdori/_version.py"
 
 [tool.hatch.version]
 source = "vcs"
+fallback-version = "2.0.0"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -96,7 +109,7 @@ scripts.open = "python -m webbrowser -t docs/_build/html/index.html"
 scripts.clean = "git clean -fdX -- {args:docs}"
 
 [tool.hatch.envs.hatch-test]
-features = [ "test" ]
+features = [ "test", "preprocessing", "plot" ]
 
 [tool.ruff]
 line-length = 120
