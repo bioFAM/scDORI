@@ -10,19 +10,18 @@ Fitted results differ from v1.0.0. Refit your data rather than comparing network
 
 | Setting | v1.0.0 | v2.0.0 | To restore the v1.0.0 setting |
 | --- | --- | --- | --- |
-| Phase 2 | phase 1 fine-tuned | phase 1 frozen, features cached | `freeze_phase1_in_grn: false` |
+| Phase 2 | phase 1 frozen by default but no caching | phase 1 frozen, features cached | `freeze_phase1_in_grn: false` |
 | Topics fitted in phase 2 | all | topics used after phase 1 (`grn_topic_selection: "live"`) | `"all"` |
 | TF-expression rule | `within_topic`, cutoff 0.1 | `mean_within_across`, cutoff 0.2 | `tf_expression_scaling: "within_topic"`, `tf_expression_clamp: 0.1` |
 | Minimum TF detection | none | RNA seen in 2% of a topic's top cells (`tf_expression_min_detection: 0.02`) | `tf_expression_min_detection: 0` |
 | Repressor L1 | 0 | `5e-5`, same as activators | `l1_penalty_grn_repressor: 0.0` |
-| Peak–gene window for human | 80 kb | 150 kb on each side; mouse stays at 80 kb | `window_size: 80000` |
+
 
 These switches restore v1.0.0 settings, not v1.0.0 results, because the fixes below cannot be switched off. Explicit settings and existing checkpoints are respected.
 
 ### Fixed
 
 - Regularization takes effect: L1 and L2 penalties were computed on detached tensors, so they never influenced training (#19).
-- The cells used to measure each topic's TF expression are chosen by identity, not by position in a shuffled data loader.
 - ATAC metacell means are converted from insertions to fragments once, not twice during training.
 - A saved phase 1 no longer overrides newly preprocessed TF binding when phase 2 starts.
 - A fresh install could not finish preprocessing on datasets above 8,192 cells: `pynndescent` 0.7 is not compatible with the supported `scanpy`, so it is now pinned below 0.7.
