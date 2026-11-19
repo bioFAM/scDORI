@@ -48,20 +48,42 @@ def project(tmp_path):
     return settings, expression
 
 
-def test_loader_uses_saved_settings_and_expression_without_refitting(project, monkeypatch):
+def all_cells_gate(result, ids=12):
+    loader = DataLoader(TensorDataset(torch.arange(ids)), batch_size=4, shuffle=False)
+    return get_tf_expression(result.config.tf_expression_mode, result.model, "cpu", loader,
+        result.rna, result.atac, result.num_cells, result.tf_indices, result.onehot_batch, result.config)
+
+
+def test_loader_uses_saved_settings_and_recomputes_the_gate_from_all_cells(project):
     settings, expression = project
     settings.training.num_topics = 99
     settings.training.batch_col = "incorrect_current_setting"
     settings.training.tf_expression_clamp = .99
-    monkeypatch.setattr("scdori._core.train_grn.get_tf_expression", lambda *a, **k: pytest.fail("Saved values must be reused"))
     result = load_downstream_model(settings, device="cpu")
-    np.testing.assert_array_equal(result.tf_expression, expression)
     np.testing.assert_array_equal(result.onehot_batch[:2], [[0, 1], [1, 0]])
-    assert result.config.num_topics == 3 and result.config.tf_expression_clamp == .2
+    assert result.config.num_topics == 3 and result.config.tf_expression_clamp == .2  # the fit's rule
     assert settings.training.num_topics == 99  # the caller's object is not silently modified
     assert result.config.data_dir == settings.training.data_dir
-    assert result.tf_expression_record["recomputed"] is False
     assert result.rna.layers["counts"].shape == (12, 4)
+    # Downstream gate = the fit's TF-expression rule applied to all 12 cells (training and validation).
+    torch.testing.assert_close(result.tf_expression, all_cells_gate(result), rtol=0, atol=0)
+    record = result.tf_expression_record
+    assert record["recomputed"] is True and record["cells"] == "all" and record["num_cells"] == 12
+    assert (record["tf_expression_scaling"], record["tf_expression_clamp"], record["tf_expression_min_detection"]) \
+        == ("mean_within_across", 0.2, 0.02)
+    assert record["phase2_training_gate"].endswith("topic_tf_expression.npy")
+    saved = json.loads((Path(settings.downstream.grn_output) / "downstream_run.json").read_text())
+    assert saved["tf_expression"]["cells"] == "all" and saved["tf_expression"]["num_cells"] == 12
+
+
+def test_explicit_gate_file_is_used_instead(project, monkeypatch):
+    settings, expression = project
+    settings.downstream.tf_expression_file = str(Path(settings.training.weights_folder_grn) / "topic_tf_expression.npy")
+    monkeypatch.setattr("scdori._core.train_grn.get_tf_expression", lambda *a, **k: pytest.fail("File must be used"))
+    result = load_downstream_model(settings, device="cpu")
+    np.testing.assert_array_equal(result.tf_expression, expression)
+    assert result.tf_expression_record["recomputed"] is False
+    assert result.tf_expression_record["cells"] == "as saved in the file"
 
 
 def test_loader_rejects_reordered_cells_and_does_not_create_results(project):
@@ -75,22 +97,46 @@ def test_loader_rejects_reordered_cells_and_does_not_create_results(project):
     assert not Path(settings.downstream.grn_output).exists()
 
 
-def test_missing_expression_requires_explicit_original_split_recomputation(project):
+def test_gate_needs_neither_the_saved_gate_nor_the_training_split(project):
     settings, _ = project
     folder = Path(settings.training.weights_folder_grn)
     (folder / "topic_tf_expression.npy").unlink()
-    with pytest.raises(FileNotFoundError, match="saved phase-2"):
-        load_downstream_model(settings, device="cpu")
-    settings.downstream.allow_tf_expression_recompute = True
+    np.savez(folder / "training_split.npz", train=np.array([0, 0]))  # invalid, and not used
     result = load_downstream_model(settings, device="cpu")
-    loader = DataLoader(TensorDataset(torch.arange(8)), batch_size=4, shuffle=False)
-    expected = get_tf_expression(result.config.tf_expression_mode, result.model, "cpu", loader,
-        result.rna, result.atac, result.num_cells, result.tf_indices, result.onehot_batch, result.config)
-    torch.testing.assert_close(result.tf_expression, expected, rtol=0, atol=0)
-    assert result.tf_expression_record["recomputed"]
-    np.savez(folder / "training_split.npz", train=np.array([0, 0]))
-    with pytest.raises(ValueError, match="training split"):
-        load_downstream_model(settings, device="cpu")
+    torch.testing.assert_close(result.tf_expression, all_cells_gate(result), rtol=0, atol=0)
+    assert result.tf_expression_record["phase2_training_gate"] is None
+
+
+@pytest.mark.parametrize("mode", ["actual", "latent"])
+def test_preview_runs_with_the_shuffle_null_rule_and_matches_phase_2(project, mode):
+    """The training notebook's preview cell must run the shuffled-cell test that phase 2 runs and exclude the same
+    topics (it once failed under "shuffle_null", because only phase 2 ran the test)."""
+    from scdori._core.evaluation import get_latent_topics
+    from scdori._core.topic_selection import sequential_loader, shuffle_null_topics
+
+    settings, _ = project
+    fit = load_downstream_model(settings, device="cpu")
+    c, model = fit.config, fit.model
+    c.tf_expression_mode = mode
+    c.grn_topic_selection = "shuffle_null"
+    loader = DataLoader(TensorDataset(torch.arange(8)), batch_size=4, shuffle=True)
+    state = {k: v.clone() for k, v in model.state_dict().items()}
+    random = torch.get_rng_state().clone()
+    # Phase 2's computation (frozen_grn.train_frozen_grn, shuffled_cell_test), done here directly.
+    theta, ids = get_latent_topics(model, "cpu", sequential_loader(loader), fit.rna, fit.atac, fit.num_cells,
+                                   fit.tf_indices, fit.onehot_batch, return_indices=True)
+    null = shuffle_null_topics(model, "cpu", fit.rna, fit.atac, fit.num_cells, fit.tf_indices, fit.onehot_batch, ids, theta, c)
+    torch.set_rng_state(random)
+    if not null["keep"].any():
+        with pytest.raises(ValueError, match="No topic has more weight"):
+            preview_phase2_tfs(model, "cpu", loader, fit.rna, fit.atac, fit.num_cells, fit.tf_indices, fit.onehot_batch, c)
+        return
+    preview = preview_phase2_tfs(model, "cpu", loader, fit.rna, fit.atac, fit.num_cells, fit.tf_indices, fit.onehot_batch, c)
+    assert preview.excluded_topics == [f"Topic_{k}" for k in np.flatnonzero(~null["keep"])]
+    assert getattr(model, "grn_topics", None) is None
+    torch.testing.assert_close(torch.get_rng_state(), random, rtol=0, atol=0)
+    for key, value in state.items():
+        torch.testing.assert_close(model.state_dict()[key], value, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("mode", ["actual", "latent"])

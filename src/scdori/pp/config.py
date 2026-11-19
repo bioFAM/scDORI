@@ -54,9 +54,11 @@ class PreprocessingConfig:
     mitochondrial_prefix : str
         Prefix used to identify mitochondrial genes in the RNA AnnData.
     genes_user : list of str
-        Genes retained during variable-feature selection if present after upstream RNA filters.
+        Genes retained during variable-feature selection if present after upstream RNA filters. Default: none.
+        In the mouse gastrulation example, erythroid genes such as Gypa and Alas2 could be added here.
     tfs_user : list of str
-        TFs retained if present after RNA filters and represented in the motif database.
+        TFs retained (and given networks) if present after RNA filters and represented in the motif database.
+        Default: none. In the gastrulation example, Tal1 and Gata1 could be added here.
     peaks_user : list of str
         Exact input ATAC peak names to retain, even outside gene windows or below
         the variability cutoff. No counts or gene links are invented.
@@ -83,12 +85,21 @@ class PreprocessingConfig:
         Whether to keep promoter peaks unconditionally in the final set of peaks.
     promoter_col : str
         Column in ATAC `.var` indicating if a peak is a promoter peak (True/False).
+    insilico_weight_top_pct : float
+        In-silico ChIP-seq (:func:`scdori.pp.compute_motif_pvalues`, :func:`scdori.pp.averaged_metacell_correlation`,
+        :func:`scdori.pp.compute_in_silico_chipseq_weighted`): a hit gets motif weight 1 at the TF's top
+        ``insilico_weight_top_pct`` % of hits (default 5).
+    insilico_n_clusterings, insilico_first_seed : int
+        The correlation is averaged over ``insilico_n_clusterings`` Leiden clusterings (default 10) at
+        ``leiden_resolution`` with seeds ``insilico_first_seed`` (default 101), ``insilico_first_seed + 1``, ...
     motif_match_pvalue_threshold : float
-        P-value threshold for motif hits in FIMO for in-silico ChIP-seq.
+        P-value threshold for motif hits in FIMO for in-silico ChIP-seq, and the hit cutoff of the motif weight.
     correlation_percentile : float
-        Percentile cutoff for correlation significance with TF expression (e.g., 99 => p≈0.01).
+        Percentile cutoff for correlation significance with TF expression (e.g., 99 => p≈0.01), applied to the
+        TF's peaks without a motif hit.
     n_bg_peaks_for_corr : int
-        Number of peaks (lowest motif scores) used per TF as background in correlation tests.
+        Fallback background size when a TF has fewer than 100 peaks without a motif hit. (The v2.0.0 function
+        :func:`scdori.pp.compute_in_silico_chipseq` uses it as the number of lowest-scoring peaks per TF.)
     correlation_normalization : str
         Metacell values correlated for in-silico ChIP-seq: ``"mean_log"`` (default) uses the mean of
         each cell's log-normalized RNA and mean ATAC fragments, ``"none"`` uses mean counts of both,
@@ -131,8 +142,8 @@ class PreprocessingConfig:
     # Genes & TF selection
     mitochondrial_prefix: str = "mt-"
 
-    genes_user = ["Myt1l"]
-    tfs_user = ["Tbx5", "Myt1l", "Cdx2", "Sox2"]
+    genes_user: list[str] = field(default_factory=list)
+    tfs_user: list[str] = field(default_factory=list)
     peaks_user: list[str] = field(default_factory=list)
     motif_database = "cisbp"
 
@@ -155,6 +166,9 @@ class PreprocessingConfig:
     promoter_col: str = "promoter_col"
 
     # Correlation & in-silico ChIP-seq
+    insilico_weight_top_pct: float = 5.0
+    insilico_n_clusterings: int = 10
+    insilico_first_seed: int = 101
     motif_match_pvalue_threshold: float = 1e-3
     correlation_percentile: float = 99
     n_bg_peaks_for_corr: int = 5000

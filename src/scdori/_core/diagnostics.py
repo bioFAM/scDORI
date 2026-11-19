@@ -22,6 +22,7 @@ import pandas as pd
 import scipy.sparse as sp
 import torch
 
+from .config import train_default
 from .evaluation import get_latent_topics
 from .train_grn import scale_topic_tf_expression, topic_tf_detection_filter, topic_tf_expression_means
 
@@ -168,7 +169,7 @@ def phase1_diagnostics(
     gate_indices=None,
     groupby=None,
     batch_key=None,
-    dead_max_theta=0.1,
+    dead_max_theta=0.05,
     dead_max_mean_fraction=0.1,
     weak_min_dominant_fraction=0.1,
     support_quantile=0.9,
@@ -305,8 +306,10 @@ def phase1_diagnostics(
             "tf_expression_mode": str(config.tf_expression_mode),
             "cells_per_topic": int(config.cells_per_topic),
             "tf_expression_clamp": float(config.tf_expression_clamp),
-            "tf_expression_min_detection": float(getattr(config, "tf_expression_min_detection", 0.0)),
-            "tf_expression_scaling": getattr(config, "tf_expression_scaling", "within_topic"),
+            "tf_expression_min_detection": float(
+                getattr(config, "tf_expression_min_detection", train_default("tf_expression_min_detection"))
+            ),
+            "tf_expression_scaling": getattr(config, "tf_expression_scaling", train_default("tf_expression_scaling")),
             "effective_topics_definition": "exp(entropy(mean topic proportions across inspected cells))",
         },
     )
@@ -360,7 +363,9 @@ def effective_number_of_topics(theta):
     return float(np.exp(-(nz * np.log(nz)).sum()))
 
 
-def topic_usage_qc(theta, labels=None, dead_max_theta=0.1, dead_max_mean_fraction=0.1, weak_min_dominant_fraction=0.1):
+def topic_usage_qc(
+    theta, labels=None, dead_max_theta=0.05, dead_max_mean_fraction=0.1, weak_min_dominant_fraction=0.1
+):
     """Per-topic usage table with ``dead``, ``diffuse`` and ``weak`` flags and a ``status`` column.
 
     Status is one of ``dead`` (collapsed: max theta < ``dead_max_theta`` and mean theta <
@@ -426,8 +431,10 @@ def collapse_indicators(model):
 def zscore_across_topics(matrix, rows=None, ddof=0, eps=1e-5):
     """Z-score each column across ``rows`` (the reference topics); other rows are NaN.
 
-    ``ddof=0, eps=1e-5`` matches the gene z-score of the downstream code (fresh
-    BatchNorm); ``ddof=1`` with ``eps=1e-8`` added to the std matches the TF z-scores.
+    ``ddof=0, eps=1e-5`` matches the original downstream gene z-score (fresh
+    BatchNorm; ``compute_topic_gene_matrix`` with ``sd_floor=0``, whose default
+    now adds a spread floor); ``ddof=1`` with ``eps=1e-8`` added to the std
+    matches the TF z-scores.
     """
     matrix = np.asarray(matrix, dtype=float)
     rows = np.arange(matrix.shape[0]) if rows is None else np.asarray(rows)
@@ -592,7 +599,7 @@ def _tf_gate(diag, model, device, rna, atac, num_cells, tf_indices, onehot, conf
             means = torch.softmax(model.topic_tf_decoder.detach().float().cpu(), dim=1).numpy()
     else:
         raise ValueError(f"Unknown tf_expression_mode: {mode!r}")
-    policy = getattr(config, "tf_expression_scaling", "within_topic")
+    policy = getattr(config, "tf_expression_scaling", train_default("tf_expression_scaling"))
     unthresholded = scale_topic_tf_expression(torch.as_tensor(means, dtype=torch.float32), 0, policy).numpy()
     scored = scale_topic_tf_expression(torch.as_tensor(means, dtype=torch.float32), config.tf_expression_clamp, policy).numpy()
     gate = scored * keep

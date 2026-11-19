@@ -41,6 +41,7 @@
     Phase1Diagnostics
     prepare_count_matrix
     preview_phase2_tfs
+    resolve_training_length
     read_live_topics
     save_model_weights
     save_regulons
@@ -81,9 +82,12 @@
 ```{eval-rst}
 .. autosummary::
 
+    averaged_metacell_correlation
     compute_gene_peak_distance_matrix
     compute_hvgs_and_tfs
     compute_in_silico_chipseq
+    compute_in_silico_chipseq_weighted
+    compute_motif_pvalues
     compute_motif_scores
     create_dir_if_not_exists
     create_extended_gene_bed
@@ -95,6 +99,7 @@
     load_anndata
     load_gtf
     load_motif_database
+    motif_pvalue_floor
     pp.retain_requested_peaks
     ppConfig
     remove_mitochondrial_genes

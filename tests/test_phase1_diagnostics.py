@@ -90,7 +90,8 @@ def test_zscore_reference_matches_existing_score_definitions():
     raw = rng.random((6, 9))
     live = [0, 2, 4, 5]
     z = zscore_across_topics(raw, live)
-    expected = gene_importance_scores(pd.DataFrame(raw[live]))["across_topics_zscore"].to_numpy()
+    # The plain z-score is the original gene score, i.e. without the v2.1.0 spread floor.
+    expected = gene_importance_scores(pd.DataFrame(raw[live]), sd_floor=0)["across_topics_zscore"].to_numpy()
     np.testing.assert_allclose(z[live], expected, rtol=1e-12)
     assert np.isnan(z[[1, 3]]).all()
     # TF variant matches the pandas z-score in get_top_activators_per_topic.

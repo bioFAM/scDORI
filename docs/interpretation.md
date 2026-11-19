@@ -9,7 +9,7 @@ A cell can use several topics. Its topic weights add up to one. Averaging these
 weights within a cell type shows which programs that group uses most; it is not
 the percentage of cells assigned to each topic.
 
-The notebook initially keeps topics with mean weight above `0.07` in at least
+The notebook initially keeps topics with mean weight above `0.05` in at least
 one cell type. A rare population within a broad label can be missed by that rule.
 You can lower the threshold, or set it to `None` in the notebook to include all
 topics retained for phase 2.
@@ -18,9 +18,19 @@ topics retained for phase 2.
 
 The gene score starts from the model's topic–peak and peak–gene weights. The
 peak–gene links are used during training to predict RNA. We compare each gene across topics, then use a softmax to make a positive set of
-scores for each topic. This is the normalization used in the original downstream
+scores for each topic. This follows the normalization of the original downstream
 notebook. It helps genes specific to a program stand out against genes that score
 highly in many topics.
+
+Since v2.1.0, a gene's spread across topics counts as at least half the median
+gene's spread (`sd_floor=0.5` in `compute_topic_gene_matrix` and
+`gene_importance_scores`). Without this floor, a gene that scores near zero in every
+topic has a tiny spread, and a small difference in one topic gives it a top score.
+The downstream notebook's saved outputs come from v2.0.0 and use the original
+score: 14 of the 65 leading genes it lists are detected in fewer than 1% of cells
+in every cell type, and none are with the floor. Genes with a typical spread keep
+almost the same order, and genes with low but specific expression are kept.
+`sd_floor=0` gives the original z-score.
 
 The ranking describes a learned program, rather than measured expression.
 Across-topic scaling can make a small difference look large, so gene expression
@@ -123,7 +133,7 @@ the gene's expression pattern; the two maps have different units and colour scal
 
 | Saved score | Calculation |
 | --- | --- |
-| Gene across-topic z-score | Centre each gene across topics and divide by `sqrt(population variance + 1e-5)`. |
+| Gene across-topic z-score | Centre each gene across topics and divide by `sqrt(population variance + (sd_floor × s0)² + 1e-5)`, where `s0` is the median gene standard deviation across the reference topics and `sd_floor` is 0.5 (0 gives the original score). |
 | Gene downstream softmax | Apply softmax across genes within each topic after the above standardisation. |
 | TF `raw` | Sum the final signed gene contributions, separately by sign; report positive repressor magnitudes. |
 | TF `within_group_share` | Divide by total TF contribution in the topic, with `1e-8` for numerical stability. |

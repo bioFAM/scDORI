@@ -9,6 +9,7 @@ import scipy.sparse as sp
 import torch
 import torch.nn.functional as F
 
+from .config import train_default
 from .data_io import save_model_weights
 from .dataloader import create_minibatch, read_count_rows
 from .topic_selection import apply_grn_topic_selection, grn_topic_ids, sequential_loader, write_grn_topics
@@ -34,6 +35,38 @@ def freeze_phase1(model):
         param.requires_grad_(name.startswith(("tf_gene_topic_", "rna_grn_batch_")))
         param.grad = None
     model.eval()
+
+
+# Parameters that ``phase2_train_nuisance`` also trains in phase 2 (names as in ``model.named_parameters()``).
+# Besides the GRN terms, the RNA-from-GRN likelihood depends on phase 1 only through the RNA dispersion
+# ``rna_alpha_nb`` (shared with the phase-1 RNA likelihood) and the RNA library factor
+# ``rna_library_factor(rna counts)``. The ATAC/TF dispersions, batch factors and decoder BatchNorm layers only enter
+# phase-1 reconstruction losses, which are constants for the GRN, so they stay frozen.
+NUISANCE_PARAMETER_PREFIXES = ("rna_alpha_nb", "rna_library_factor.")
+
+
+def unfreeze_nuisance(model):
+    """Make the ``phase2_train_nuisance`` parameters trainable; returns their names."""
+    names = []
+    for name, param in model.named_parameters():
+        if name.startswith(NUISANCE_PARAMETER_PREFIXES):
+            param.requires_grad_(True)
+            names.append(name)
+    return names
+
+
+def _nuisance_rna_terms(model, theta, rna, batch_onehot, topic_gene):
+    """RNA library factor and per-cell phase-1 RNA loss from cached theta, computed as in ``scDoRI.forward``.
+
+    The topic-gene decoder, ``rna_batch_factor`` and ``rna_batch_norm`` (eval mode) are frozen; the library factor
+    and the dispersion are recomputed so that both receive gradients.
+    """
+    batch_factor_rna = torch.mm(batch_onehot, model.rna_batch_factor)
+    rna_logits = torch.mm(theta, topic_gene) + batch_factor_rna
+    preds_rna = F.softmax(model.rna_batch_norm(rna_logits), dim=-1)
+    library_factor_rna = model.rna_library_factor(rna)
+    rna_loss = -log_nb_positive(rna, preds_rna * library_factor_rna, F.softplus(model.rna_alpha_nb)).sum(dim=1)
+    return library_factor_rna, rna_loss
 
 
 @torch.no_grad()
@@ -164,35 +197,63 @@ def train_frozen_grn(model, device, train_loader, eval_loader, rna, atac, num_ce
     from .train_grn import get_tf_expression
 
     flags = ("update_encoder_in_grn", "update_peak_gene_in_grn", "update_topic_peak_in_grn", "update_topic_tf_in_grn")
-    if any(getattr(config, flag) for flag in flags):
+    if any(getattr(config, flag, train_default(flag)) for flag in flags):
         raise ValueError("freeze_phase1_in_grn cannot be combined with update_*_in_grn flags")
+    nuisance = getattr(config, "phase2_train_nuisance", train_default("phase2_train_nuisance"))
     if not rna.obs_names.equals(atac.obs_names):
         raise ValueError("RNA and ATAC cell IDs must have identical order")
     freeze_phase1(model)
+
+    def shuffled_cell_test():
+        from .evaluation import get_latent_topics
+        from .topic_selection import shuffle_null_topics
+
+        theta, ids = get_latent_topics(model, device, sequential_loader(train_loader), rna, atac, num_cells,
+                                       tf_indices, batches, return_indices=True)
+        return shuffle_null_topics(model, device, rna, atac, num_cells, tf_indices, batches, ids, theta, config)
+
     selection = apply_grn_topic_selection(
-        model, config, lambda: _train_theta(model, device, train_loader, rna, atac, num_cells, tf_indices, batches)
+        model, config, lambda: _train_theta(model, device, train_loader, rna, atac, num_cells, tf_indices, batches),
+        shuffled_cell_test,
     )
     write_grn_topics(config.weights_folder_grn, selection)
     logger.info("Frozen cache storage estimate (bytes): %s", estimate_frozen_cache_bytes(model, rna.n_obs))
     topic_tf = get_tf_expression(
         config.tf_expression_mode, model, device, train_loader, rna, atac, num_cells, tf_indices, batches, config
     )
-    use_cache = getattr(config, "cache_frozen_grn", True)
+    use_cache = getattr(config, "cache_frozen_grn", train_default("cache_frozen_grn"))
     factors = build_grn_factors(model) if use_cache else None
     cache = (
         build_cell_cache(model, device, rna, atac, num_cells, tf_indices, batches, config.batch_size_cell_prediction)
         if use_cache
         else None
     )
+    if nuisance:
+        # theta and the ATAC/TF losses stay cached; the RNA library factor and RNA loss are recomputed per minibatch.
+        with torch.no_grad():
+            topic_gene = model.topic_gene_matrix() if cache is not None else None
+        logger.info("phase2_train_nuisance: also training %s", unfreeze_nuisance(model))
     with torch.no_grad():
         fixed_penalty = _regularization(model, config, grn=False)
         alpha = F.softplus(model.rna_alpha_nb)
-    optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=config.learning_rate_grn)
+    if nuisance:
+        extra = [p for name, p in model.named_parameters() if name.startswith(NUISANCE_PARAMETER_PREFIXES)]
+        grn = [p for name, p in model.named_parameters()
+               if p.requires_grad and not name.startswith(NUISANCE_PARAMETER_PREFIXES)]
+        rate = getattr(config, "learning_rate_nuisance", train_default("learning_rate_nuisance"))
+        optimizer = torch.optim.Adam([
+            {"params": grn, "lr": config.learning_rate_grn},
+            {"params": extra, "lr": config.learning_rate_grn if rate is None else rate},
+        ])
+    else:
+        optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=config.learning_rate_grn)
 
     def run_epoch(loader, training):
         # All phase 1 BN statistics and dropout remain fixed even during GRN training.
         model.eval()
         model.rna_grn_batch_norm.train(training)
+        if nuisance:  # the RNA library network trains as in phase 1 (BatchNorm statistics update, dropout on)
+            model.rna_library_factor.train(training)
         totals = torch.zeros(5, device=device)
         count = 0
         with torch.set_grad_enabled(training):
@@ -204,10 +265,16 @@ def train_frozen_grn(model, device, train_loader, eval_loader, rna, atac, num_ce
                         target = target.toarray(order="C")
                     x = torch.as_tensor(np.ascontiguousarray(target), device=device, dtype=alpha.dtype)
                     batch = torch.as_tensor(batches[ids.numpy()], device=device, dtype=alpha.dtype)
-                    mu = forward_from_topics(
-                        model, cache.theta[ids].to(device), cache.library[ids].to(device), batch, topic_tf, factors
-                    )
-                    aux = cache.auxiliary[ids].to(device)
+                    if nuisance:
+                        theta = cache.theta[ids].to(device)
+                        library, rna_loss = _nuisance_rna_terms(model, theta, x, batch, topic_gene)
+                        mu = forward_from_topics(model, theta, library, batch, topic_tf, factors)
+                        aux = torch.cat((cache.auxiliary[ids, :2].to(device), rna_loss[:, None]), dim=1)
+                    else:
+                        mu = forward_from_topics(
+                            model, cache.theta[ids].to(device), cache.library[ids].to(device), batch, topic_tf, factors
+                        )
+                        aux = cache.auxiliary[ids].to(device)
                 else:
                     inputs, tf, libraries, cells, batch = create_minibatch(
                         device, ids, rna, atac, num_cells, tf_indices, batches
@@ -217,7 +284,8 @@ def train_frozen_grn(model, device, train_loader, eval_loader, rna, atac, num_ce
                     mu = out["mu_nb_rna_grn"]
                     aux = _auxiliary_losses(model, out, x, a, tf, libraries)
                 loss_atac, loss_tf, loss_rna = aux[:, 0].sum(), aux[:, 1].mean(), aux[:, 2].mean()
-                loss_grn = -log_nb_positive(x, mu, alpha).sum(dim=1).mean()
+                dispersion = F.softplus(model.rna_alpha_nb) if nuisance else alpha
+                loss_grn = -log_nb_positive(x, mu, dispersion).sum(dim=1).mean()
                 loss = (
                     config.weight_atac_grn * loss_atac
                     + config.weight_tf_grn * loss_tf
@@ -238,8 +306,13 @@ def train_frozen_grn(model, device, train_loader, eval_loader, rna, atac, num_ce
             raise ValueError("GRN training and evaluation loaders must not be empty")
         return (totals / count).cpu().tolist()
 
+    from .config import record_training_length, resolve_training_length
+
+    length = record_training_length(
+        resolve_training_length(config, len(train_loader), "grn"), config.weights_folder_grn
+    )
     best, patience = float("inf"), 0
-    for epoch in range(config.max_grn_epochs):
+    for epoch in range(length["max_epochs"]):
         train_losses = run_epoch(train_loader, True)
         logger.info("[Frozen-GRN] epoch=%d train=%s cached=%s", epoch, train_losses, use_cache)
         if (epoch + 1) % config.eval_frequency == 0:
@@ -250,7 +323,7 @@ def train_frozen_grn(model, device, train_loader, eval_loader, rna, atac, num_ce
                 save_model_weights(model, Path(config.weights_folder_grn), "scdori_best_eval")
             else:
                 patience += 1
-                if patience > config.grn_val_patience:
+                if patience > length["patience"]:
                     break
     model.eval()
     return model

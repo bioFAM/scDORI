@@ -1,4 +1,6 @@
 import logging
+import math
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -49,6 +51,18 @@ def metacell_correlation_matrices(rna_metacell, atac_metacell, peak_names, norma
     if normalization == "log_normalized":
         rna, atac = _log_normalize_rows(rna, 1e4), _log_normalize_rows(atac, 1e6)
     return rna[:, tf_mask], atac[:, columns]
+
+
+def peak_tf_correlation(atac_matrix, rna_matrix):
+    """Pearson correlation of every peak with every TF across metacells: (n_peaks x n_tfs).
+
+    Both inputs are standardised per column (``std + 1e-8`` in the denominator) and multiplied; columns
+    without variation give 0. Used by both in-silico ChIP-seq methods.
+    """
+    n_cells = atac_matrix.shape[0]
+    X = (atac_matrix - atac_matrix.mean(axis=0)) / (atac_matrix.std(axis=0) + 1e-8)
+    Y = (rna_matrix - rna_matrix.mean(axis=0)) / (rna_matrix.std(axis=0) + 1e-8)
+    return np.nan_to_num((X.T @ Y) / n_cells)
 
 
 def compute_in_silico_chipseq(
@@ -112,13 +126,8 @@ def compute_in_silico_chipseq(
     if n_cells < 2 or n_bg < 1 or not 0 < percentile < 100:
         raise ValueError("Need at least two metacells, positive n_bg and percentile in (0, 100)")
 
-    # Z-score peaks & TF expression
-    X = (atac_matrix - atac_matrix.mean(axis=0)) / (atac_matrix.std(axis=0) + 1e-8)
-    Y = (rna_matrix - rna_matrix.mean(axis=0)) / (rna_matrix.std(axis=0) + 1e-8)
-
     # Pearson correlation => (n_peaks x n_tfs)
-    pearson_r = (X.T @ Y) / n_cells
-    pearson_r = np.nan_to_num(pearson_r)
+    pearson_r = peak_tf_correlation(atac_matrix, rna_matrix)
 
     pearson_r_act = np.clip(pearson_r, 0, None)  # only positive
     pearson_r_rep = np.clip(pearson_r, None, 0)  # only negative
@@ -167,3 +176,124 @@ def compute_in_silico_chipseq(
 
     logger.info("Finished in-silico ChIP-seq computation.")
     return insilico_chipseq_act_sig, insilico_chipseq_rep_sig
+
+
+# ---------------------------------------------------------------------------------------------------
+# Motif-weighted in-silico ChIP-seq (used by preprocessing from v2.1.0, chosen by benchmarking). Differences
+# from the v2.0.0 method (compute_motif_scores + compute_in_silico_chipseq above, unchanged): motif evidence is
+# -log10 p of the best FIMO hit (comparable across motifs) instead of the min-max scaled score; peaks without a
+# motif hit are never scored (the v2.0.0 method scored them when FIMO scores were negative); the correlation is
+# averaged over several Leiden clusterings; the correlation cutoff comes from the TF's peaks without a motif hit;
+# and the result is weight x r, not rescaled per TF.
+
+
+def averaged_metacell_correlation(
+    data_rna,
+    data_atac,
+    peak_names,
+    resolution: float = 10,
+    batch_key: str = "sample",
+    normalization: str = "mean_log",
+    n_clusterings: int = 10,
+    first_seed: int = 101,
+) -> np.ndarray:
+    """Peak-TF Pearson correlation averaged over Leiden clusterings with seeds ``first_seed``, ``first_seed + 1``, ...
+
+    One neighbour graph is built as :func:`scdori.pp.create_metacells` builds it (normalise, log1p, PCA,
+    Harmony on ``batch_key``, neighbours); it is clustered ``n_clusterings`` times at ``resolution``. For each
+    clustering, metacells are averaged with :func:`scdori.pp.metacells.aggregate_metacells` and correlated
+    (:func:`metacell_correlation_matrices`, :func:`peak_tf_correlation`, in float64). The inputs are not modified.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (n_peaks, n_tfs), float32 (the precision of the benchmarked implementation, which stored it so).
+    """
+    import anndata as ad
+    import scanpy as sc
+    import scanpy.external as sce
+
+    from .metacells import aggregate_metacells
+
+    if n_clusterings < 1:
+        raise ValueError("n_clusterings must be at least 1")
+    graph = data_rna.copy()
+    sc.pp.normalize_total(graph)
+    sc.pp.log1p(graph)
+    sc.pp.pca(graph)
+    sce.pp.harmony_integrate(graph, batch_key)
+    sc.pp.neighbors(graph, use_rep="X_pca_harmony")
+    total = 0
+    for seed in range(first_seed, first_seed + n_clusterings):
+        sc.tl.leiden(graph, resolution=resolution, key_added="scdori_averaged_leiden", random_state=seed)
+        labelled = ad.AnnData(X=data_rna.X, obs=data_rna.obs.copy(), var=data_rna.var)
+        labelled.obs["leiden"] = graph.obs["scdori_averaged_leiden"].values
+        rna_metacell, atac_metacell = aggregate_metacells(labelled, data_atac, "leiden")
+        rna_matrix, atac_matrix = metacell_correlation_matrices(
+            rna_metacell, atac_metacell, peak_names, normalization=normalization
+        )
+        atac_matrix = atac_matrix.toarray() if hasattr(atac_matrix, "toarray") else atac_matrix
+        total = total + peak_tf_correlation(
+            np.asarray(atac_matrix, dtype=np.float64), np.asarray(rna_matrix, dtype=np.float64)
+        )
+        logger.info("Averaged correlation: clustering seed %d, %d metacells", seed, rna_metacell.n_obs)
+    return (total / n_clusterings).astype(np.float32)
+
+
+def compute_in_silico_chipseq_weighted(
+    correlation,
+    motif_logp,
+    hit_p: float = 1e-3,
+    weight_top_pct: float = 5.0,
+    bg_percentile: float = 99.0,
+    n_bg_fallback: int = 5000,
+    min_background: int = 100,
+):
+    """Motif-weighted activator and repressor TF binding from motif p-values and the averaged correlation.
+
+    For each TF:
+
+    1. Hits are peaks with -log10 p >= -log10 ``hit_p`` (from :func:`compute_motif_pvalues`); other peaks get 0.
+    2. Motif weight: linear in -log10 p, 0 at the hit cutoff and 1 at the TF's top ``weight_top_pct`` % of
+       hits, clipped to [0, 1].
+    3. Background: the TF's peaks without a hit. If fewer than ``min_background`` exist, the ``n_bg_fallback``
+       peaks with the weakest motif evidence (stable order) are used instead.
+    4. A hit is kept as activator if its correlation r exceeds the ``bg_percentile`` percentile of the
+       background's positive part of r, and as repressor if -r exceeds the same percentile of the background's
+       negative part.
+    5. Activator = weight x r (0 to 1); repressor = -weight x |r| (-1 to 0). Not rescaled per TF.
+
+    Returns
+    -------
+    (activator, repressor, info)
+        Two (n_peaks, n_tfs) float64 arrays, and a dict with the per-TF ``weight_top_logp`` (the -log10 p at
+        weight 1) and the correlation cutoffs ``cutoff_activator`` / ``cutoff_repressor``.
+    """
+    r = np.asarray(correlation, dtype=np.float64)
+    L = np.asarray(motif_logp, dtype=np.float64)
+    if r.shape != L.shape:
+        raise ValueError(f"correlation {r.shape} and motif evidence {L.shape} must have the same shape")
+    if not 0 < weight_top_pct < 100 or not 0 < bg_percentile < 100 or not 0 < hit_p < 1:
+        raise ValueError("weight_top_pct and bg_percentile must be in (0, 100) and hit_p in (0, 1)")
+    cutoff = -math.log10(hit_p)
+    hit = L >= cutoff
+    with warnings.catch_warnings(), np.errstate(invalid="ignore"):
+        warnings.simplefilter("ignore", RuntimeWarning)  # TFs without any hit give NaN here and are never used
+        top = np.nanpercentile(np.where(hit, L, np.nan), 100 - weight_top_pct, axis=0)
+        weight = np.where(hit, np.clip((L - cutoff) / np.maximum(top - cutoff, 1e-9), 0, 1), 0.0)
+    positive, negative = np.clip(r, 0, None), np.clip(-r, 0, None)
+    activator, repressor = np.zeros_like(r), np.zeros_like(r)
+    cut_act, cut_rep = np.full(r.shape[1], np.nan), np.full(r.shape[1], np.nan)
+    for j in range(r.shape[1]):
+        background = ~hit[:, j]
+        if background.sum() < min_background:  # too few peaks without a hit: use the weakest hits
+            background = np.zeros_like(background)
+            background[np.argsort(L[:, j], kind="stable")[:n_bg_fallback]] = True
+        cut_act[j] = np.percentile(positive[background, j], bg_percentile)
+        cut_rep[j] = np.percentile(negative[background, j], bg_percentile)
+        keep_act = hit[:, j] & (positive[:, j] > cut_act[j])
+        keep_rep = hit[:, j] & (negative[:, j] > cut_rep[j])
+        activator[keep_act, j] = weight[keep_act, j] * positive[keep_act, j]
+        repressor[keep_rep, j] = -weight[keep_rep, j] * negative[keep_rep, j]
+    info = {"weight_top_logp": top, "cutoff_activator": cut_act, "cutoff_repressor": cut_rep}
+    return activator, repressor, info

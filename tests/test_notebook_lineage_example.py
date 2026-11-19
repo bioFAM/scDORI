@@ -1,5 +1,6 @@
 """Run the optional comparison cells, including active and skipped examples."""
 import json
+import re
 from pathlib import Path
 
 import anndata as ad
@@ -24,14 +25,15 @@ def cells():
 @pytest.fixture
 def scope(tmp_path):
     rng=np.random.default_rng(1)
-    topics=[f'Topic_{k}' for k in range(12)]
+    n_topics=22  # covers the saved fit's comparison topics (8, 10, 21)
+    topics=[f'Topic_{k}' for k in range(n_topics)]
     groups=['NMP','Somitic_mesoderm','Spinal_cord']
     tfs=['Pax6','Sox2','Rfx4','Tbx6','Mesp2','Lef1','T','Hoxb9']
     genes=['Sox2','Pax6','Tbx6','Mesp1','Mesp2','Fgf4','Foxc2','Meox1']
-    theta=rng.dirichlet(np.ones(12),18)
+    theta=rng.dirichlet(np.ones(n_topics),18)
     cell_index=[f'c{i}' for i in range(18)]
     cell_groups=pd.Series(groups*6,index=cell_index)
-    act=rng.uniform(size=(12,len(tfs),len(genes)));rep=-rng.uniform(size=act.shape)
+    act=rng.uniform(size=(n_topics,len(tfs),len(genes)));rep=-rng.uniform(size=act.shape)
     act[10:12,tfs.index('Sox2')]=0
     rep[10:12,tfs.index('Sox2')]=0
     act[8,tfs.index('T')]=0;rep[8,tfs.index('T')]=0
@@ -41,7 +43,7 @@ def scope(tmp_path):
     sc.settings.figdir=tmp_path
     env=dict(np=np,pd=pd,plt=plt,sns=sns,json=json,display=lambda x:None,
              choose_example_topics=choose_example_topics,df_topic_celltype=pd.DataFrame(theta,index=cell_index,columns=topics).groupby(cell_groups).mean().T,
-             gene_scores_all=pd.DataFrame(index=topics),scaling_topic_ids=list(range(12)),sc=sc,rna_metacell=rna,
+             gene_scores_all=pd.DataFrame(index=topics),scaling_topic_ids=list(range(n_topics)),sc=sc,rna_metacell=rna,
              topic_tf_scores=scores,GRN_OUTPUT=tmp_path,
              network_for_topic=lambda topic,kind='activator':pd.DataFrame((act if kind=='activator' else rep)[topic],index=tfs,columns=genes))
     yield env
@@ -72,8 +74,9 @@ def test_unrelated_dataset_skips_optional_example(scope):
 
 def test_auto_topic_suggestions_keep_reference_and_nonconsecutive_ids(scope):
     scope['gene_scores_all']=scope['gene_scores_all'].loc[['Topic_3','Topic_8','Topic_11']]
-    source=cells()['lineage-choices'].replace('COMPARISON_TOPICS = [8, 10, 11]', 'COMPARISON_TOPICS = []')
+    source, n=re.subn(r'COMPARISON_TOPICS = \[[0-9, ]*\]', 'COMPARISON_TOPICS = []', cells()['lineage-choices'])
+    assert n==1
     exec(source,scope)
     assert scope['comparison_ready']
     assert set(scope['comparison_topics']) <= {3,8,11}
-    assert scope['scaling_topic_ids']==list(range(12))
+    assert scope['scaling_topic_ids']==list(range(22))
