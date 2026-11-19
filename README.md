@@ -15,6 +15,20 @@ scDORI is described in [Saraswat et al., *Nature* 2026](https://www.nature.com/a
 - 🧬**Continuous eGRN modelling** : each cell is a mixture of topics, allowing the study of changes in GRNs. No need for predefined clusters
 - 🧰 **Scalable** to large datasets via **mini-batch training**
 
+## What's new in v2.1.0
+
+- **New TF-binding calculation:** each motif match is scored by its p-value, and the TF–peak
+  correlation is averaged over ten clusterings. Binding values are no longer scaled to 0–1 per TF,
+  so networks differ from v2.0.0. To use it with an existing fit, rerun preprocessing and phase 2;
+  phase 1 can be kept.
+- **Other new defaults:** sparser phase-2 networks (L1 penalty `5e-3`), training length set from the
+  number of optimizer steps, and a downstream topic threshold of `0.05`.
+- **Faster background calculation** for the chromatin-derived networks, one chromosome at a time.
+
+**Upgrading from v2.0.0:** refit rather than comparing networks across versions. The example
+notebooks still show v2.0.0 outputs. The [changelog](CHANGELOG.md) lists every change and how to
+restore the v2.0.0 defaults.
+
 ## What's new in v2.0.0
 
 - **Faster phase 2:** the fixed phase-1 calculations are cached instead of being repeated for
