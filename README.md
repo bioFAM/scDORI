@@ -15,35 +15,29 @@ scDORI is described in [Saraswat et al., *Nature* 2026](https://www.nature.com/a
 - 🧬**Continuous eGRN modelling** : each cell is a mixture of topics, allowing the study of changes in GRNs. No need for predefined clusters
 - 🧰 **Scalable** to large datasets via **mini-batch training**
 
-## What's new in v2.1.0
-
-- **New TF-binding calculation:** each motif match is scored by its p-value, and the TF–peak
-  correlation is averaged over ten clusterings. Binding values are no longer scaled to 0–1 per TF,
-  so networks differ from v2.0.0. To use it with an existing fit, rerun preprocessing and phase 2;
-  phase 1 can be kept.
-- **Other new defaults:** sparser phase-2 networks (L1 penalty `5e-3`), training length set from the
-  number of optimizer steps, and a downstream topic threshold of `0.05`.
-- **Faster background calculation** for the chromatin-derived networks, one chromosome at a time.
-
-**Upgrading from v2.0.0:** refit rather than comparing networks across versions. The example
-notebooks still show v2.0.0 outputs. The [changelog](CHANGELOG.md) lists every change and how to
-restore the v2.0.0 defaults.
-
-## What's new in v2.0.0
+## What's new in v2
 
 - **Faster phase 2:** the fixed phase-1 calculations are cached instead of being repeated for
   every minibatch: **10.9× faster phase-2 training** in a matched single-cell benchmark
   ([timings](#training-performance)).
+- **Faster background calculation** for the chromatin-derived networks, one chromosome at a time.
+- **New TF-binding calculation (v2.1.0):** each motif match is scored by its p-value, and the TF–peak
+  correlation is averaged over ten clusterings. Binding values are no longer scaled to 0–1 per TF,
+  so networks differ from v2.0.0. To use it with an existing fit, rerun preprocessing and phase 2;
+  phase 1 can be kept.
 - **Regularisation now works:** in v1.0.0 the L1 and L2 penalties were computed on detached tensors,
   so they never affected training.
+- **Sparser networks and automatic training length:** phase-2 L1 penalty `5e-3`, training length set
+  from the number of optimizer steps, and a downstream topic threshold of `0.05`.
 - **A clearer TF-expression rule:** a TF is compared with other TFs in a topic and with its own
   expression in other topics, and it needs measured RNA in that topic's top cells.
 - **Review before continuing:** check topic use, cell maps and gene and TF programs after phase 1.
 - **Clearer notebooks:** the same three notebooks and one shared config, with fuller explanations of
-  how to read each result.
+  how to read each result. The saved outputs come from v2.0.0.
 
-**Upgrading from v1.0.0:** fitted results differ, so refit your data rather than comparing networks
-across versions. The [changelog](CHANGELOG.md) lists the new defaults and how to restore them.
+**Upgrading:** fitted results differ between versions, so refit your data rather than comparing
+networks across versions. The [changelog](CHANGELOG.md) lists the new defaults and how to restore
+them.
 
 ## Input Requirements
 
