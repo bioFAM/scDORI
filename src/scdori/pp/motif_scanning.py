@@ -1,4 +1,6 @@
+import inspect
 import logging
+import math
 import subprocess
 from pathlib import Path
 
@@ -157,6 +159,121 @@ def simulate_pwm_scoring(pwm_matrix, bed_file, fasta_file, window):
 
     df = pd.DataFrame({"motif_name": ["motif1"] * n_peaks, "sequence_name": sequence_names, "score": scores})
     return df
+
+
+def motif_pvalue_floor(pwm) -> float:
+    """Best possible p-value of a motif in tangermeme FIMO's score table: the table's smallest non-zero entry.
+
+    tangermeme ``fimo`` turns scores into p-values with a table of its rounded score distribution
+    (``log2(pwm + eps) - log2(0.25)``, rounded in steps of ``bin_size``; both are ``fimo``'s own defaults, read
+    from its signature here). A perfect match can fall beyond the table's last finite entry, and ``fimo`` then
+    reports p = 0. The last finite entry is the probability, under a uniform background, of a sequence reaching
+    the highest rounded score: the product over positions of (number of bases tied at that position's highest
+    rounded score) / 4. This is the floor the benchmarked implementation used for perfect matches (it read the same
+    table entry); it is never below the motif's best possible p, so a cutoff stricter than that p is not passed.
+    """
+    defaults = inspect.signature(fimo).parameters
+    eps, bin_size = defaults["eps"].default, defaults["bin_size"].default
+    weights = np.asarray(pwm, dtype=np.float64)  # alphabet x positions, as tangermeme reads MEME files
+    rounded = np.round((np.log2(weights + eps) - math.log2(0.25)) / bin_size)
+    ties = (rounded == rounded.max(axis=0, keepdims=True)).sum(axis=0)
+    return float(np.prod(ties / 4.0))
+
+
+def compute_motif_pvalues(
+    bed_file: Path,
+    fasta_file: Path,
+    pwms_sub: dict,
+    key_to_tf: dict,
+    n_peaks: int,
+    window: int = 500,
+    threshold: float = 1e-3,
+    chunk_size: int = 20,
+) -> pd.DataFrame:
+    """Motif evidence for the motif-weighted in-silico ChIP-seq: -log10 p of the best FIMO hit per (peak, TF).
+
+    Peaks are scanned with tangermeme ``fimo`` at p < ``threshold``, as in :func:`compute_motif_scores`, in
+    groups of ``chunk_size`` motifs to bound memory. For each (peak, TF) the smallest ``p-value`` that ``fimo``
+    reports is kept and returned as -log10 p; 0 means no hit. Hits with a negative score are hits.
+
+    ``fimo`` reports p = 0 for some perfect matches; those get the motif's best possible p from FIMO's score
+    table (:func:`motif_pvalue_floor`), as in the benchmarked implementation. The number of such hits and the floor
+    used are stored per TF in ``result.attrs["perfect_match_hits"]`` and ``result.attrs["pvalue_floor"]``.
+
+    ``fimo`` skips N bases when it scores a window, so a window made only of N scores exactly 0, and motifs whose
+    p-value cutoff lies below a score of 0 (long, low-information motifs) report such windows as hits. Hits whose
+    window consists only of N are dropped; all other hits, including real hits with a score of 0 or below, are
+    kept. This departs from the benchmarked implementation, which treated a (peak, TF) whose best score was 0 as no
+    hit and so also dropped real negative-score hits in those peaks: on one benchmark dataset the two rules
+    differ in 301 (peak, TF) entries (all hits here, none in the benchmarked implementation), in 12 peaks next to
+    N runs. Per TF, ``result.attrs["all_n_hits"]`` counts
+    the dropped hits and ``result.attrs["all_n_entries"]`` the (peak, TF) pairs left without any hit by it.
+    Windows that are only partly N are scored by ``fimo`` without their N positions and are kept.
+
+    Returns
+    -------
+    pd.DataFrame
+        Shape (n_peaks, n_TFs), rows named by the peak names in ``bed_file`` and columns by TF (sorted).
+    """
+    logger.info(f"Computing motif p-values for {bed_file} (n_peaks={n_peaks}) with window={window}")
+    loci = pd.read_csv(bed_file, sep="\t", header=None).iloc[:, :4]
+    loci.columns = ["chr", "start", "end", "peak_name"]
+    if len(loci) != n_peaks:
+        raise ValueError(f"{bed_file} has {len(loci)} peaks, expected {n_peaks}")
+    X = extract_loci(loci, str(fasta_file), in_window=window).float()
+    # N positions are all-zero columns of the one-hot sequence; cumulative counts locate all-N windows.
+    is_n = (X.sum(dim=1) == 0).numpy()
+    peaks_with_n = np.flatnonzero(is_n.any(axis=1))
+    n_row = np.full(n_peaks, -1)
+    n_row[peaks_with_n] = np.arange(len(peaks_with_n))
+    n_cumulative = np.concatenate(
+        [np.zeros((len(peaks_with_n), 1), dtype=np.int64), np.cumsum(is_n[peaks_with_n], axis=1)], axis=1
+    )
+    tfs = sorted(set(key_to_tf.values()))
+    column = {tf: i for i, tf in enumerate(tfs)}
+    logp = np.zeros((n_peaks, len(tfs)))
+    floors, floored, all_n_hits, all_n_entries = {}, {}, {}, {}
+    keys = list(pwms_sub)
+    for start in tqdm(range(0, len(keys), chunk_size), desc="Scanning motifs"):
+        subset = {key: pwms_sub[key] for key in keys[start : start + chunk_size]}
+        for hits in fimo(subset, X, threshold=threshold):
+            if not len(hits):
+                continue
+            key = hits.motif_name.values[0]
+            tf = key_to_tf[key]
+            row = n_row[hits.sequence_name.to_numpy()]
+            all_n = np.zeros(len(hits), dtype=bool)
+            if (row >= 0).any():
+                where = np.flatnonzero(row >= 0)
+                starts = hits.start.to_numpy()[where].astype(np.int64)
+                ends = hits.end.to_numpy()[where].astype(np.int64)
+                n_in_window = n_cumulative[row[where], ends] - n_cumulative[row[where], starts]
+                all_n[where] = n_in_window == ends - starts
+            had_hit = set(hits.sequence_name[all_n])
+            hits = hits[~all_n]  # windows of N only (see above): not hits
+            all_n_hits[tf] = int(all_n.sum())
+            all_n_entries[tf] = len(had_hit - set(hits.sequence_name))
+            if not len(hits):
+                continue
+            best = hits.groupby("sequence_name")["p-value"].min().reset_index()
+            p = best["p-value"].to_numpy(dtype=np.float64)
+            floor = motif_pvalue_floor(pwms_sub[key])
+            floors[tf], floored[tf] = floor, int((p == 0).sum())
+            logp[best.sequence_name.to_numpy(), column[tf]] = -np.log10(np.where(p > 0, p, floor))
+    result = pd.DataFrame(logp, index=loci["peak_name"].astype(str).values, columns=tfs)
+    result.attrs["pvalue_floor"] = pd.Series(floors, dtype=float).reindex(tfs)
+    result.attrs["perfect_match_hits"] = pd.Series(floored, dtype="Int64").reindex(tfs).fillna(0).astype(int)
+    result.attrs["all_n_hits"] = pd.Series(all_n_hits, dtype="Int64").reindex(tfs).fillna(0).astype(int)
+    result.attrs["all_n_entries"] = pd.Series(all_n_entries, dtype="Int64").reindex(tfs).fillna(0).astype(int)
+    logger.info(
+        "Finished computing motif p-values: %s; %d hits with p = 0 received the motif's best possible p; "
+        "%d hits in windows of only N bases were dropped, leaving %d (peak, TF) pairs without a hit",
+        result.shape,
+        int(result.attrs["perfect_match_hits"].sum()),
+        int(result.attrs["all_n_hits"].sum()),
+        int(result.attrs["all_n_entries"].sum()),
+    )
+    return result
 
 
 def load_motif_database(motif_path: Path, final_tfs: list[str]) -> tuple[dict, dict]:

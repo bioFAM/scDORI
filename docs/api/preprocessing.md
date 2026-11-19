@@ -44,9 +44,12 @@ These corrections can change results when preprocessing is rerun.
 .. autosummary::
     :toctree: ../generated
 
+    averaged_metacell_correlation
     compute_gene_peak_distance_matrix
     compute_hvgs_and_tfs
     compute_in_silico_chipseq
+    compute_in_silico_chipseq_weighted
+    compute_motif_pvalues
     compute_motif_scores
     create_dir_if_not_exists
     create_extended_gene_bed
@@ -58,6 +61,7 @@ These corrections can change results when preprocessing is rerun.
     load_anndata
     load_gtf
     load_motif_database
+    motif_pvalue_floor
     ppConfig
     remove_mitochondrial_genes
     run_bedtools_intersect

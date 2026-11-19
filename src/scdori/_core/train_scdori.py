@@ -250,17 +250,24 @@ def train_scdori_phases(
         The trained scDORI model after both warmup phases.
     """
     validate_topic_penalties(config_file)
+    from .config import record_training_length, resolve_training_length
+
+    # "auto" epoch limit and patience follow from the number of optimizer steps per epoch.
+    length = record_training_length(
+        resolve_training_length(config_file, len(train_loader), "phase1"), config_file.weights_folder_scdori
+    )
+    model.phase1_training_length = length  # notebook inspection only; not part of the state_dict
     optimizer = torch.optim.Adam(model.parameters(), lr=config_file.learning_rate_scdori)
 
     best_eval_loss = float("inf")
     val_patience = 0
-    max_val_patience = config_file.phase1_patience
+    max_val_patience = length["patience"]
     previous_phase = None
     # Notebook inspection only; not part of model state_dict or optimization.
     model.phase1_history = []
 
     logger.info("Starting scDORI phase 1 training (module 1,2,3) with validation + early stopping.")
-    for epoch in range(config_file.max_scdori_epochs):
+    for epoch in range(length["max_epochs"]):
         phase = get_phase_scdori(epoch, config_file)
         if phase != previous_phase:
             # Adding RNA changes the objective; losses across phases are not comparable.

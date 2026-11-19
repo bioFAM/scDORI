@@ -283,11 +283,11 @@ def test_checkpoint_specific_selection_wins_over_run_directory(case, tmp_path):
     assert grn_topic_ids(model) == LIVE
 
 
-def test_new_defaults_select_live_topics_after_phase1(case):
+def test_live_option_selects_live_topics_after_phase1(case):
     model, _, _, _, _, _, _ = case
-    config = TrainConfig()
+    config = TrainConfig(grn_topic_selection="live")
     assert config.freeze_phase1_in_grn and config.cache_frozen_grn
-    assert config.grn_topic_selection == "live"
+    assert TrainConfig().grn_topic_selection == "live"
     theta = np.full((10, 6), .25)
     theta[:, DEAD] = 1e-12
     before = {k: v.clone() for k, v in model.state_dict().items()}

@@ -4,7 +4,9 @@ This example shows a completed run on the repository's processed mouse gastrulat
 single-cell data: **56,861 cells, 4,000 genes, 90,000 peaks and 300 TFs**.
 It illustrates what to inspect between training phases and how to read the downstream
 rankings. It is one fit, rather than a rule for how many topics another dataset needs,
-and it has the clearest erythroid program of the three fits we compared.
+and it has the clearest erythroid program of the three fits we compared. The run used
+scDORI v2.0.0, as do the saved outputs of the notebooks; the [changelog](changelog.md)
+lists the settings that v2.1.0 changes.
 
 ## First, inspect the topics
 
@@ -33,7 +35,7 @@ forty is also available. The retained topics kept their original numbers.
 ## Then, learn and explore the networks
 
 This run used frozen, cached phase 2, L1 coefficients of `5e-5` for both activator
-and repressor weights, and the `mean_within_across` TF-expression rule
+and repressor weights (the v2.0.0 default; v2.1.0 uses `5e-3`), and the `mean_within_across` TF-expression rule
 with cutoff `0.2` and a 2% detection floor. That expression rule affects training: changing it requires a
 new phase-2 fit. It is distinct from scaling TF scores for interpretation.
 

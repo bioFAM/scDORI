@@ -60,7 +60,8 @@ def remove_mitochondrial_genes(data_rna: ad.AnnData, mito_prefix: str = "mt-") -
       from the data.
     - Logs the number of removed genes.
     """
-    data_rna.var["mt"] = [gene.lower().startswith(mito_prefix) for gene in data_rna.var_names]
+    prefix = mito_prefix.lower()
+    data_rna.var["mt"] = [gene.lower().startswith(prefix) for gene in data_rna.var_names]
     keep_mask = ~data_rna.var["mt"]
     data_rna_sub = data_rna[:, keep_mask].copy()
     dropped = data_rna.shape[1] - data_rna_sub.shape[1]

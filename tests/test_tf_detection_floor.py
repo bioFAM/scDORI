@@ -98,9 +98,13 @@ def test_keeping_names_only_the_panel_positions_asked_for():
     np.testing.assert_array_equal(keep[0], [False, True])
 
 
-def test_config_from_before_this_setting_keeps_every_tf():
-    _, keep = topic_tf_detection_filter(SELECTED, counts([200, 0]), [0, 1], SimpleNamespace())
-    assert keep.all()
+def test_config_without_this_setting_uses_the_current_default():
+    """A config object without the setting behaves like TrainConfig() (it used to keep every TF)."""
+    _, missing = topic_tf_detection_filter(SELECTED, counts([200, 0]), [0, 1], SimpleNamespace())
+    default = config(tf_expression_min_detection=TrainConfig().tf_expression_min_detection)
+    _, expected = topic_tf_detection_filter(SELECTED, counts([200, 0]), [0, 1], default)
+    np.testing.assert_array_equal(missing, expected)
+    assert not missing.all()  # the TF never detected is removed, as with the default 0.02
 
 
 def test_invalid_floor_is_rejected():

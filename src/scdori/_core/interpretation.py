@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+from scipy.special import softmax
 
 
 def _matrix(frame):
@@ -15,25 +16,39 @@ def _matrix(frame):
     return values
 
 
+def _check_sd_floor(sd_floor):
+    if isinstance(sd_floor, bool) or not isinstance(sd_floor, (int, float, np.integer, np.floating)):
+        raise ValueError("sd_floor must be a nonnegative number")
+    sd_floor = float(sd_floor)
+    if not np.isfinite(sd_floor) or sd_floor < 0:
+        raise ValueError("sd_floor must be a nonnegative number")
+    return sd_floor
+
+
 def _frame(values, original):
     return pd.DataFrame(values, index=original.index, columns=original.columns)
 
 
-def gene_importance_scores(raw):
-    """Reproduce downstream fresh BatchNorm + softmax, with explicit axes.
+def gene_importance_scores(raw, sd_floor=0.5):
+    """Reproduce the downstream gene score (``compute_topic_gene_matrix``), with explicit axes.
 
-    Rows are topics; columns are genes. Population variance and epsilon 1e-5
-    match a fresh default BatchNorm1d in training mode. All supplied topics
+    Rows are topics; columns are genes. Each gene is centred across topics and
+    divided by sqrt(population variance + (sd_floor * s0)**2 + 1e-5), where s0 is
+    the median gene standard deviation across the supplied topics; softmax then
+    runs across genes within each topic. ``sd_floor=0`` is the original fresh
+    BatchNorm1d standardization (v2.0.0 and earlier). All supplied topics
     participate equally, including unused topics, matching the original helper.
     These are relative importance scores, not decoder expression predictions.
     """
+    sd_floor = _check_sd_floor(sd_floor)
     values = _matrix(raw)
-    z = (values - values.mean(axis=0)) / np.sqrt(values.var(axis=0) + 1e-5)
-    exp = np.exp(z - z.max(axis=1, keepdims=True))
+    var = values.var(axis=0)
+    floor_var = (sd_floor * np.median(np.sqrt(var))) ** 2
+    z = (values - values.mean(axis=0)) / np.sqrt(var + floor_var + 1e-5)
     return {
         "raw": raw.copy(),
         "across_topics_zscore": _frame(z, raw),
-        "downstream_softmax": _frame(exp / exp.sum(axis=1, keepdims=True), raw),
+        "downstream_softmax": _frame(softmax(z, axis=1), raw),
     }
 
 

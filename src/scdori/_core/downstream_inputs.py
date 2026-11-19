@@ -11,9 +11,11 @@ def load_downstream_model(settings, device=None):
     """Restore the fitted model and its inputs for the full analysis notebook.
 
     Keep current data/output paths so a project can move between machines. Restore
-    model and expression settings from the checkpoint's training snapshot, and
-    verify cell, feature and batch order before using its saved expression values.
-    Old fits may opt into recomputation with their original training split.
+    model and expression settings from the checkpoint's training snapshot and verify
+    cell, feature and batch order. The TF-expression gate is recomputed from all cells
+    (training and validation) with the fit's TF-expression rule, as in v1.0.0; phase 2
+    itself was trained with the gate from its training cells. ``downstream.tf_expression_file``
+    loads a saved gate instead. ``downstream_run.json`` records which cells the gate used.
     """
     import copy
     from types import SimpleNamespace
@@ -68,31 +70,35 @@ def load_downstream_model(settings, device=None):
                    num_tfs=act.shape[1], num_topics=config.num_topics, num_batches=onehot.shape[1],
                    dim_encoder1=config.dim_encoder1, dim_encoder2=config.dim_encoder2).to(device)
     model = load_best_model(model, checkpoint, device)
+    from .downstream import _peak_chromosomes
+
+    # Peak chromosome labels let compute_atac_grn_*_with_significance compute the background per chromosome.
+    model.peak_chromosomes = _peak_chromosomes(atac)
     topics = load_grn_topics(model, checkpoint)
     excluded = topics["excluded_topics"] if topics else []
-    try:
+    if settings.downstream.tf_expression_file is not None:
         values, record = load_saved_tf_expression(checkpoint.parent, model.num_topics, model.num_tfs,
             filename=settings.downstream.tf_expression_file, excluded_topics=excluded)
+        record = {**record, "cells": "as saved in the file"}
         expression = torch.as_tensor(values, device=device)
-    except FileNotFoundError:
-        if not settings.downstream.allow_tf_expression_recompute or settings.downstream.tf_expression_file is not None:
-            raise
+    else:
         from .train_grn import get_tf_expression
-        with np.load(checkpoint.parent / "training_split.npz", allow_pickle=False) as split:
-            ids = split["train"]
-        if (ids.ndim != 1 or ids.dtype.kind not in "iu" or not len(ids) or len(np.unique(ids)) != len(ids)
-                or ids.min() < 0 or ids.max() >= rna.n_obs):
-            raise ValueError("The saved training split contains invalid cell indices")
-        loader = DataLoader(TensorDataset(torch.as_tensor(ids, dtype=torch.long)),
+        loader = DataLoader(TensorDataset(torch.arange(rna.n_obs, dtype=torch.long)),
                             batch_size=config.batch_size_cell_prediction, shuffle=False)
-        expression = get_tf_expression(config.tf_expression_mode, model, device, loader,
-                                       rna, atac, num_cells, tf_indices, onehot, config)
-        record = {"source": "recomputed_from_original_training_split", "recomputed": True,
-                  "split": str(checkpoint.parent / "training_split.npz"),
+        # Iterating a DataLoader draws from the global random stream; keep the downstream stream unchanged.
+        with torch.random.fork_rng(devices=[device.index or 0] if device.type == "cuda" else []):
+            expression = get_tf_expression(config.tf_expression_mode, model, device, loader,
+                                           rna, atac, num_cells, tf_indices, onehot, config)
+        training_gate = checkpoint.parent / "topic_tf_expression.npy"
+        record = {"source": "recomputed_from_all_cells", "recomputed": True, "cells": "all",
+                  "num_cells": int(rna.n_obs),
+                  "tf_expression_mode": str(config.tf_expression_mode),
+                  "cells_per_topic": int(config.cells_per_topic),
                   "tf_expression_scaling": config.tf_expression_scaling,
                   "tf_expression_clamp": config.tf_expression_clamp,
                   "tf_expression_min_detection": config.tf_expression_min_detection,
-                  "tf_expression_keep_tfs": list(config.tf_expression_keep_tfs)}
+                  "tf_expression_keep_tfs": list(config.tf_expression_keep_tfs),
+                  "phase2_training_gate": str(training_gate) if training_gate.is_file() else None}
     output = Path(settings.downstream.grn_output)
     output.mkdir(parents=True, exist_ok=True)
     seed = settings.downstream.permutation_seed

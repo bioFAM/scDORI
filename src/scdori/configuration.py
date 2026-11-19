@@ -8,7 +8,7 @@ import shutil
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-from scdori._core.config import trainConfig
+from scdori._core.config import AUTO_LENGTH_SETTINGS, trainConfig
 from scdori.pp.config import ppConfig
 
 
@@ -84,7 +84,7 @@ def check_checkpoint_model_config(checkpoint, config):
 class DownstreamConfig:
     """Analysis options; these do not change model training."""
 
-    topic_activity_threshold: float | None = 0.07
+    topic_activity_threshold: float | None = 0.05  # v2.0.0: 0.07
     exclude_topics: list[int] = field(default_factory=list)
     scale_selected_topics: bool = True
     grn_output: str = "results/downstream"
@@ -97,8 +97,8 @@ class DownstreamConfig:
     geneset_file: str | None = None  # .gmt, or a table with geneset and genesymbol columns
     geneset_name_contains: str | None = None  # keep only the sets whose name contains this text
     ora_min_targets: int = 5
-    tf_expression_file: str | None = None
-    allow_tf_expression_recompute: bool = False
+    tf_expression_file: str | None = None  # use this saved gate instead of recomputing it from all cells
+    allow_tf_expression_recompute: bool = False  # no longer used: the gate is recomputed from all cells
     permutation_seed: int | None = None
     activator_alpha: float = 0.05
     repressor_alpha: float = 0.05
@@ -139,13 +139,18 @@ def _apply(config, values, section):
             or (type(default) is float and type(value) in (float, int))
             or (isinstance(default, (str, Path)) and isinstance(value, str))
             or (isinstance(default, list) and isinstance(value, list))
-            or (default is None and key != "permutation_seed" and (value is None or isinstance(value, str)))
+            or (default is None and key not in ("permutation_seed", "learning_rate_nuisance")
+                and (value is None or isinstance(value, str)))
             or (key == "topic_activity_threshold" and value is None)
             or (key == "window_size" and (value is None or (type(value) is int and value >= 0)))
             or (key == "permutation_seed" and (value is None or type(value) is int))
+            or (key == "learning_rate_nuisance" and (value is None or type(value) in (float, int)))
+            or (key in AUTO_LENGTH_SETTINGS and (value == "auto" or (type(value) is int and value >= 0)))
         )
         if not valid:
             raise ValueError(f"Invalid type for {section}.{key}: {value!r}")
+        if key in AUTO_LENGTH_SETTINGS and value != "auto" and not (type(value) is int and value >= 0):
+            raise ValueError(f'{section}.{key} must be "auto" or a nonnegative integer, got {value!r}')
         if key in {"example_celltypes", "example_tfs"} and any(
             not isinstance(item, str) or not item.strip() for item in value
         ):

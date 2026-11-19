@@ -6,6 +6,7 @@ import scipy.sparse as sp
 import torch
 from tqdm import tqdm
 
+from .config import train_default
 from .data_io import save_model_weights
 from .dataloader import create_minibatch
 from .evaluation import get_latent_topics
@@ -152,7 +153,9 @@ def get_tf_expression(
     else:
         raise ValueError(f"Unknown tf_expression_mode: {tf_expression_mode!r}")
     topic_tf = scale_topic_tf_expression(
-        topic_tf, config_file.tf_expression_clamp, getattr(config_file, "tf_expression_scaling", "within_topic")
+        topic_tf,
+        config_file.tf_expression_clamp,
+        getattr(config_file, "tf_expression_scaling", train_default("tf_expression_scaling")),
     )
     if selected is not None:
         _, keep = topic_tf_detection_filter(selected, rna_anndata, tf_indices, config_file)
@@ -231,9 +234,9 @@ def topic_tf_detection_filter(selected_cells, rna_anndata, tf_indices, config_fi
 
     Returns ``(detection, keep)``, both ``(num_topics, num_tfs)``. ``keep`` is True where the TF was
     seen in at least the required fraction of the topic's selected cells, or is exempt. A config
-    from before this setting existed keeps every TF.
+    object without this setting uses the current default (``TrainConfig.tf_expression_min_detection``).
     """
-    floor = getattr(config_file, "tf_expression_min_detection", 0.0)
+    floor = getattr(config_file, "tf_expression_min_detection", train_default("tf_expression_min_detection"))
     if not 0 <= floor <= 1:
         raise ValueError("tf_expression_min_detection must be between 0 and 1")
     detection = topic_tf_detection(selected_cells, rna_anndata, tf_indices)
@@ -472,7 +475,13 @@ def train_model_grn(
     torch.nn.Module
         The trained model after the GRN phase completes or early stopping occurs.
     """
-    if getattr(config_file, "freeze_phase1_in_grn", False):
+    frozen = getattr(config_file, "freeze_phase1_in_grn", train_default("freeze_phase1_in_grn"))
+    if not frozen and getattr(config_file, "phase2_train_nuisance", train_default("phase2_train_nuisance")):
+        raise ValueError(
+            "phase2_train_nuisance requires freeze_phase1_in_grn=True; the legacy phase 2 already trains these "
+            "parameters (with dropout and changing encoder BatchNorm statistics)"
+        )
+    if frozen:
         from .frozen_grn import train_frozen_grn
 
         return train_frozen_grn(
@@ -525,7 +534,12 @@ def train_model_grn(
 
     best_eval_loss = float("inf")
     val_patience = 0
-    max_val_patience = config_file.grn_val_patience
+    from .config import record_training_length, resolve_training_length
+
+    length = record_training_length(
+        resolve_training_length(config_file, len(train_loader), "grn"), config_file.weights_folder_grn
+    )
+    max_val_patience = length["patience"]
     topic_tf_input = None
 
     if config_file.tf_expression_mode in ("True", "actual"):
@@ -543,7 +557,7 @@ def train_model_grn(
         )
 
     logger.info("Starting GRN training")
-    for epoch in range(config_file.max_grn_epochs):
+    for epoch in range(length["max_epochs"]):
         model.train()
         running_loss = 0.0
         running_loss_atac = 0.0

@@ -11,13 +11,16 @@ Add names to the `preprocessing` section if you want to keep particular features
 even when they are not highly variable:
 
 ```json
-"genes_user": ["Gypa", "Alas2"],
-"tfs_user": ["Tal1", "Gata1"],
-"peaks_user": ["chr1:1000-1200"]
+"genes_user": [],
+"tfs_user": [],
+"peaks_user": []
 ```
 
-These mouse genes and the placeholder peak coordinate are examples; use names
-from your own data. Genes need to survive the initial protein-coding and
+All three lists are empty by default, so nothing is added unless you add it. For
+example, for erythroid cells in the mouse gastrulation data you could list the
+genes Gypa and Alas2 in `genes_user`, the TFs Tal1 and Gata1 in `tfs_user`, and
+an exact peak name such as chr1:1000-1200 in `peaks_user`; use names from your
+own data. Genes need to survive the initial protein-coding and
 mitochondrial filters. TFs also need matching motifs. Put a TF in `tfs_user` if
 you want its network to be fitted; listing it only as a gene does not ensure this.
 Peaks use exact names from the ATAC file.
@@ -61,6 +64,53 @@ These settings predict partly different binding sites. Tested against measured
 ChIP-seq on the example, none was clearly better. Changing this setting needs
 preprocessing and phase 2 again, but not phase 1.
 
+## How TF binding is predicted
+
+Since v2.1.0, preprocessing combines motif matches and TF–peak correlation into
+the TF–peak binding matrices as follows:
+
+- **Motif evidence:** the best FIMO match per peak and TF, as −log10 p. Its weight
+  rises linearly from 0 at `motif_match_pvalue_threshold` to 1 at the TF's top
+  `insilico_weight_top_pct` percent of matches (default 5).
+- **Correlation:** averaged over `insilico_n_clusterings` Leiden clusterings
+  (default 10, seeds `insilico_first_seed` = 101 to 110) of one neighbour graph.
+- **Values:** activator = weight × correlation and repressor = −weight ×
+  |correlation|, not rescaled per TF.
+
+A TF–peak pair is kept only when its correlation passes the
+`correlation_percentile` (default 99) of a background: the peaks without a motif
+match for that TF. When a TF has fewer than 100 such peaks, its
+`n_bg_peaks_for_corr` (default 5,000) weakest matches are used instead.
+
+v2.0.0 used summed FIMO scores and values scaled 0 to 1 per TF, with one Leiden
+clustering. Its functions (`compute_motif_scores`, `metacell_correlation_matrices`,
+`compute_in_silico_chipseq`) are unchanged, for scripts that need that binding.
+
+FIMO reports p = 0 for a perfect match to some motifs. These are replaced by
+the smallest p-value FIMO can report for that motif, which is what the
+benchmarked method used. FIMO also skips N bases, so a window made only of N
+scores 0 and can be reported as a match for long, weak motifs. Such windows are
+not counted as matches; real matches with a score of 0 or below are. The
+benchmarked method instead discarded every peak–TF pair whose best score was 0;
+on one of our benchmark datasets this differs in 301 of 46.5 million peak–TF
+pairs, in 12 peaks next to N runs, and changes 12 activator and 10 repressor
+binding entries.
+
+Like the clusters used for peak selection, the ten clusterings depend on the
+number of threads. On the same dataset, 4 instead of 16 threads
+changed the averaged correlations by 0.016 (median) and about 30% of the binding
+entries. Keep `data/generated` with your fit.
+
+Binding values are correlations multiplied by a weight between 0 and 1, so they
+lie between −1 and 1 and are usually much smaller than 1. The motif scan takes
+about as long as in v2.0.0; the ten clusterings add time that grows with the
+number of cells. On nine of our benchmark datasets (5,000–14,000 cells,
+55,000–62,000 peaks, 750–900 TFs, cluster CPU nodes) the scan took 2.5–5 minutes
+and the ten clusterings with their correlations 1.5–8.5 minutes.
+
+Switching a fit made with v2.0.0 binding to the new binding needs preprocessing
+and phase 2 again, but not phase 1.
+
 ## Before training
 
 The most useful settings in the `training` section are:
@@ -71,7 +121,8 @@ The most useful settings in the `training` section are:
 | `batch_size_cell` | Number of cells processed together; smaller batches can reduce memory use. |
 | `learning_rate_scdori` | How large the parameter updates are during phase 1. |
 | `learning_rate_grn` | The corresponding update size for phase 2. |
-| `max_scdori_epochs`, `max_grn_epochs` | Maximum passes through the training cells in each phase. |
+| `max_scdori_epochs`, `max_grn_epochs` | Maximum passes through the training cells in each phase. `"auto"` (default) sets them from a budget of optimizer steps (`phase1_max_steps`, `grn_max_steps`); an integer overrides it. See the [hyperparameter guide](training_guide.rst). |
+| `phase1_patience`, `grn_val_patience` | Validation checks without improvement before training stops. `"auto"` (default) sets them from `phase1_patience_steps` and `grn_patience_steps`; an integer overrides it. |
 | `random_seed` | Starting randomness for a new fit. A new seed with a new phase 1 gives new topic numbers and reorders top links; see [Best practices](best_practices.md). |
 
 A recommended starting point is `num_topics` = expected number of cell types + 10
@@ -109,13 +160,40 @@ The default `grn_topic_selection="live"` skips topics that were almost unused
 after phase 1. This reduces the number of networks to fit. Topic numbers stay the
 same; phase 1 is unchanged. Set it to `"all"` to fit every topic.
 
-A topic is flagged almost unused only when its highest weight is below `0.1`
-and its average weight is below `0.1 / num_topics` in the training cells.
-A topic shared weakly across many cells can therefore remain included.
+A topic is flagged almost unused only when its highest weight is below `0.05`
+(`grn_dead_topic_max_theta`) **and** its average weight is below `0.1 / num_topics`
+(`grn_dead_topic_max_mean_fraction / num_topics`) in the training cells. A topic
+that reaches 5% of any cell's topic mass, or is shared weakly across many cells,
+therefore remains included. Which topics end up almost unused depends on the
+cell types and conditions in your data.
+
+`grn_topic_selection="shuffle_null"` instead keeps a topic only if the trained
+phase-1 model gives it more weight in real cells than in shuffled cells. For each
+topic, its 100 training cells with the highest weight are taken, their gene values
+are shuffled across genes and their peak values across peaks within each cell, and
+the model is applied again (5 times, fixed seed). The topic's cutoff is the 95th
+percentile of its weight in these shuffled cells, and the topic is kept if the 99th
+percentile of its weight in the training cells is above the cutoff
+(`grn_null_top_cells`, `grn_null_shuffles`, `grn_null_quantile`,
+`grn_null_observed_quantile`, `grn_null_seed`). In our benchmarking (10 datasets,
+30 topics, computed on all cells), this kept 26 to 29 topics. The cutoffs and
+decisions are saved in `grn_topics.json`.
+A dropped topic can still carry some weight in some cells; the record gives the
+largest share any training cell loses. Topics that phase 1 left unused have weights
+near zero in every cell, and the test then compares near-zero values: on the
+gastrulation example it kept 17 of the 19 almost-unused topics and left out two
+weakly used ones.
 
 The phase-1 weights stay fixed by default, as in the original workflow. The new
 code also caches their calculations. `cache_frozen_grn=false` turns caching off
 if you want a comparison. Skipping topics needs `freeze_phase1_in_grn=true`.
+
+`phase2_train_nuisance` (default `false`, experimental) keeps phase 1 fixed as
+above but lets phase 2 also adjust the two phase-1 terms that the network fit
+depends on: the RNA dispersion and the RNA library-size network (trained as in
+phase 1, with dropout). `learning_rate_nuisance` sets their learning rate (default:
+`learning_rate_grn`). Topic activities stay fixed and cached, so topic selection
+and the TF-expression weights are the same as without it.
 The older training path is available with `freeze_phase1_in_grn=false` and
 `grn_topic_selection="all"`; its `update_*_in_grn` flags control which phase-1
 weights can change.
@@ -195,8 +273,9 @@ expression values apply to both activator and repressor contributions.
 ## Regularisation
 
 Regularisation discourages large model weights. In phase 2, both
-`l1_penalty_grn_activator` and `l1_penalty_grn_repressor` default to `5e-5`.
-You can compare smaller or larger values from the same saved phase 1.
+`l1_penalty_grn_activator` and `l1_penalty_grn_repressor` default to `5e-3`
+(v2.0.0: `5e-5`). You can compare smaller or larger values from the same saved
+phase 1.
 
 Phase-1 penalties act on the topic–peak, peak–gene and topic–TF weights. They
 are different from the phase-2 penalties. Smaller weights do not necessarily
@@ -232,11 +311,18 @@ topic–gene, topic–peak and peak–gene tables, plus short queries for a topi
 activators or repressors, its network, and a gene's linked regions in a chosen
 cell type. These queries reuse the fit and do not require training again.
 
+Leading genes are ranked by how specific they are to a topic: each gene is
+compared across topics. Since v2.1.0, `sd_floor` in `compute_topic_gene_matrix`
+(default `0.5`) stops a gene with almost no signal in any topic from ranking first:
+the spread a gene is divided by counts as at least half the median gene's spread.
+Use `0` for the original z-score of v2.0.0, which the saved downstream outputs show.
+The same scores feed the gene-set test and the exported topic–gene table.
+
 You can supply a JSON cell-type colour map through `downstream.celltype_palette`,
 for example `{"Erythroid3": "#e64b35"}`. The same colours are used in training
 and downstream plots.
 
-The `topic_activity_threshold` starts at `0.07`: keep a topic when its mean weight
+The `topic_activity_threshold` starts at `0.05`: keep a topic when its mean weight
 exceeds this in at least one cell type. This is for choosing plots, not a
 significance test. Set it to `null` to include all topics retained for phase 2.
 `exclude_topics` allows manual exclusions. Changing this set can change relative
@@ -267,6 +353,11 @@ Without this file the section is skipped.
 `geneset_name_contains` keeps only the sets whose name contains that text. Use it
 to leave out unrelated tissues: the full mouse collection also holds adult sets,
 such as uterus, which can lead topics in embryo data.
+
+The test takes each topic's top 5% of genes. Since v2.1.0 chance is judged against
+the model's gene panel, the genes that were ranked; v2.0.0 used decoupler's default
+background of 20,000 genes, which overstated every enrichment. The map saved in the
+downstream notebook was made with the v2.0.0 background.
 
 Read the result as a suggested label. It means a topic's leading genes overlap a
 signature, not that the topic is that cell type. In the gastrulation example,

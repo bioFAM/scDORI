@@ -59,7 +59,9 @@ def test_notebook_keeps_requested_peaks_when_gene_window_intersection_is_empty(t
     from types import SimpleNamespace
 
     notebook = json.loads((Path(__file__).parents[1] / 'docs/notebooks/preprocessing.ipynb').read_text())
-    code = ''.join(notebook['cells'][21]['source'])
+    # The peak-window cell, found by id so that added cells do not shift it.
+    cell = next(c for c in notebook['cells'] if c.get('id') == '8e768a28-b448-4841-822e-ffe600baecd4')
+    code = ''.join(cell['source'])
     a = ad.AnnData(np.ones((2, 2)), var=pd.DataFrame(index=['outside', 'other']))
     scope = {
         'out_dir': tmp_path, 'all_peaks_bed': tmp_path / 'all.bed', 'gene_bed_file': tmp_path / 'genes.bed',

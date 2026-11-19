@@ -2,6 +2,7 @@ from scdori._lazy import resolve_export
 
 _EXPORTS = {
     "trainConfig": (".config", "trainConfig"),
+    "resolve_training_length": (".config", "resolve_training_length"),
     "load_scdori_inputs": (".data_io", "load_scdori_inputs"),
     "save_model_weights": (".data_io", "save_model_weights"),
     "compute_activator_tf_activity_per_cell": (".downstream", "compute_activator_tf_activity_per_cell"),

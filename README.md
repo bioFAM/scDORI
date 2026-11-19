@@ -121,7 +121,7 @@ Caching makes phase 2 **10.9× faster** on the mouse gastrulation example (56,86
 
 ![Frozen phase-2 training time: 14.96 hours without caching and 1.38 hours with caching, using the same phase-1 checkpoint.](docs/_static/benchmarks/gastrulation_20260925/scdori_timing_benchmark.png)
 
-At the current defaults, a whole run on this example took **3 to 5 hours**. See the [training time page](docs/gastrulation_benchmark.md).
+At the v2.0.0 defaults, a whole run on this example took **3 to 5 hours**; v2.1.0 timings have not been measured yet. See the [training time page](docs/gastrulation_benchmark.md).
 
 ## Configuration Notes
 

@@ -6,7 +6,7 @@ Keeping phase 1 fixed lets scDORI compute its per-cell calculations once and reu
 
 Caching does not change the fit beyond rounding. Both runs stopped at the same epoch, held-out loss agreed to within 0.00004%, and their 1,000 strongest links were the same. Weaker activator links differ more, because rounding differences accumulate over training. This comparison used one seed and the earlier penalties and TF-expression rule.
 
-At the current defaults, a whole run on the example took **3 to 5 hours**:
+At the v2.0.0 defaults, a whole run on the example took **3 to 5 hours** (not yet measured for the v2.1.0 defaults, which change TF binding, penalties and training length):
 
 | Step | Time |
 | --- | ---: |

@@ -26,6 +26,7 @@
     Phase1Diagnostics
     prepare_count_matrix
     preview_phase2_tfs
+    resolve_training_length
     read_live_topics
     save_model_weights
     save_regulons

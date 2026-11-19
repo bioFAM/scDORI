@@ -27,8 +27,8 @@ Input feature selection
 **Manual inclusion of specific genes, TFs and peaks**
 
 - Force the inclusion of genes, TFs or peaks with ``genes_user``, ``tfs_user`` and
-  ``peaks_user``. This is useful for known regulators or candidate markers from
-  prior work or literature.
+  ``peaks_user`` (all empty by default). This is useful for known regulators or
+  candidate markers from prior work or literature.
 - Ensure that all TFs in ``tfs_user`` have entries in your motif database. TFs
   without motif matches are excluded during motif scanning. The preprocessing
   report lists any names that could not be included.
@@ -49,6 +49,9 @@ TF–peak correlation: empirical filtering
 
 - scDORI computes Pearson correlations between TF expression and peak accessibility
   at the metacell level to improve TF–peak specificity (in-silico ChIP-seq).
+- Since v2.1.0, each correlation is weighted by the strength of the best motif
+  match and averaged over ten Leiden clusterings; the values are not rescaled. See
+  :doc:`notebook_settings` for the details.
 - ``correlation_percentile`` prunes weak associations.
 - ``correlation_normalization`` sets which metacell values are correlated. The
   default is the mean of each cell's log-normalized RNA and the mean ATAC fragment
@@ -99,33 +102,46 @@ Regularisation
 - L1 and L2 penalties apply to the topic–peak, peak–gene and topic–TF matrices, and
   to the 3D topic–TF–gene networks.
 - Higher regularisation promotes sparsity and easier biological interpretation.
-- The phase-2 activator and repressor L1 penalties both start at ``5e-5``. Consider
-  different strengths for the two signs. To compare phase-2 penalties, reuse the same
-  saved phase 1 and write each new fit to its own output folder.
+- The phase-2 activator and repressor L1 penalties both default to ``5e-3`` (v2.0.0:
+  ``5e-5``). Consider different strengths for the two signs. To compare phase-2 penalties,
+  reuse the same saved phase 1 and write each new fit to its own output folder.
 
 Training length
 ---------------
 
-**Phase 1.** Use this heuristic, based on the number of training steps, as a guide to
-how long training should run:
+Training length is set from the number of optimizer steps (minibatches), because an
+epoch is a very different amount of training for a few hundred metacells and for tens of
+thousands of cells. With the default ``"auto"`` settings:
 
 .. code-block:: text
 
-   epochs = 60000 training steps / (number_of_cells / batch_size)
-   ### For example, 30,000 cells and batch_size = 128:
-   ### epochs = 60000 / (30000 / 128) = 256 epochs
+   steps_per_epoch    = ceil(training cells / batch size)
+   max_scdori_epochs  = max(1000, ceil(phase1_max_steps / steps_per_epoch))         phase1_max_steps = 25,000
+   phase1_patience    = max(30, ceil(phase1_patience_steps / steps_per_epoch))      phase1_patience_steps = 1,000
+   max_grn_epochs     = max(1000, ceil(grn_max_steps / steps_per_epoch))            grn_max_steps = 25,000
+   grn_val_patience   = max(5, ceil(grn_patience_steps / steps_per_epoch))          grn_patience_steps = 300
 
-Set the patience to about 5% of the total epoch count, with a minimum of 5. Patience
-is how many epochs to wait for before stopping when validation loss does not improve.
+Patience counts validation checks; with ``eval_frequency`` above 1, the step budget is
+divided by ``steps_per_epoch * eval_frequency``. Training stops after ``patience + 1``
+checks without improvement. The step budgets come from phase-1 fits on 10 of our
+benchmark datasets (batch size 128, 33 to 86 steps per epoch), which stopped after
+about 4,000 to 20,000 steps. Resulting values with batch size 128:
 
-The template sets a high limit of 1,000 epochs (``max_scdori_epochs``) with a patience
-of 50 (``phase1_patience``), so early stopping normally ends training. On the example
-(56,861 cells), phase 1 stopped after 131 and 212 epochs for two seeds, close to and
-above the 135 the heuristic gives.
+.. code-block:: text
 
-**Phase 2.** You can reduce the total training steps by half, with a minimum of 10
-epochs. The template's limit is ``max_grn_epochs`` with a patience of 5
-(``grn_val_patience``). On the example, phase 2 stopped after 118 to 197 epochs.
+   training cells  steps  max_scdori_epochs  phase1_patience  max_grn_epochs  grn_val_patience
+        400      4   6,250    250   6,250    75
+      4,224     33   1,000     31   1,000    10
+     11,008     86   1,000     30   1,000     5
+     45,488    356   1,000     30   1,000     5
+
+The first row is a few hundred metacells; the last is the example (56,861 cells, 80%
+for training). An integer in the config replaces any of these values, and the step
+budgets are settings too. ``resolve_training_length(config, steps_per_epoch, phase)``
+gives the values for your data before training, and each phase writes them to ``training_length_phase1.json`` or
+``training_length_grn.json`` in its output folder. On the example, with the earlier
+fixed patience of 50, phase 1 stopped after 131 and 212 epochs for two seeds, and
+phase 2 stopped after 118 to 197 epochs.
 
 A best checkpoint near the epoch limit is a reason to inspect the curve. If it is still
 improving substantially, a longer run may help. Small late improvements alone do not

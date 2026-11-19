@@ -1,6 +1,6 @@
 # Best practices
 
-Advice for getting results you can rely on, once you have chosen your settings with the [hyperparameter guide](training_guide.rst). The numbers come from the gastrulation example (56,861 cells). They show what to expect, but your dataset may differ.
+Advice for getting results you can rely on, once you have chosen your settings with the [hyperparameter guide](training_guide.rst). The numbers come from the gastrulation example (56,861 cells), fitted with the v2.0.0 defaults; they have not been repeated with the v2.1.0 defaults (see the [changelog](changelog.md)). They show what to expect, but your dataset may differ.
 
 ## Check the topics first
 
@@ -52,7 +52,7 @@ common_network = np.where(common, np.mean(networks, axis=0), 0)
 print(f"{common.sum():,} links in all {len(runs)} runs; {present.any(axis=0).sum():,} in any")
 ```
 
-Use `grn_repressor__0.05.npy` for repressive links. Three repeats of phase 2 from one phase 1, at the release settings, gave the following. A link is a (topic, TF, gene) combination.
+Use `grn_repressor__0.05.npy` for repressive links. Three repeats of phase 2 from one phase 1, at the v2.0.0 release settings, gave the following. A link is a (topic, TF, gene) combination.
 
 | Measure | Activating links | Repressive links |
 | --- | --- | --- |
@@ -116,12 +116,12 @@ The other measures between the two new fits point the same way:
 
 Broad results held better than individual links. Activity of 16 of 19 marker TFs ranked an expected cell type in its top three in all three fits. Gata1, Foxo3 and Klf1 led erythroid cells in all three, and Nkx2-5, Mef2c, Tbx5 and Esrrg led cardiomyocytes. Some cell types shared none of their five leading TFs.
 
-**Fits can also differ in how clear they are.** In the second new fit, erythroid cells shared their main topic with parietal endoderm, and that topic's leading genes were not erythroid markers:
+**Fits can also differ in how clear they are.** In the second new fit, erythroid cells shared their main topic with parietal endoderm, and three of that topic's five leading genes are detected in 1% of erythroid cells or fewer:
 
 | | Example fit | New fit 1 | New fit 2 |
 | --- | ---: | ---: | ---: |
 | Erythroid3's weight in its main topic | 0.54 | 0.54 | 0.43 |
-| Leading genes of that topic | Alas2, Spta1, Gypa, Hbb-bs, Hbb-bh1 | Pde6b, Alas2, Mptx2, Hbb-bt, Trhr2 | Pde6b, Chrne, Olfr569, Cnga1, Clca3a2 |
+| Leading genes of that topic (v2.1.0 gene score) | Alas2, Hbb-bs, Hbb-bh1, Gypa, Hbb-y | Alas2, Hbb-bt, Hbb-bh1, Hbb-bs, Hba-x | Trim38, Ell2, Ssxb10, Blvrb, Adamtsl5 |
 | Gata1's top 30 activating targets in the erythroid gene set (about 1 expected by chance) | 18 | 14 | 3 |
 | Nkx2-5's top 30 activating targets in the cardiac gene set (about 1 expected by chance) | 18 | 17 | 15 |
 | Validation loss of the phase-2 TF–gene model (lower is better) | 1,937 | 1,947 | 1,931 |

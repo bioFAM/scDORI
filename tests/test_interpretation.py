@@ -25,6 +25,52 @@ def test_gene_scores_match_original_downstream_helper():
     )
 
 
+def test_sd_floor_zero_is_the_original_batchnorm_score():
+    from scipy.special import softmax
+
+    from scdori._core.downstream import compute_topic_gene_matrix
+    from scdori._core.models import scDoRI
+
+    torch.manual_seed(5)
+    model = scDoRI(torch.device("cpu"), 9, 11, 3, 4, 2, 6, 5)
+    with torch.no_grad():
+        raw = model.topic_gene_matrix().double().numpy()
+    z = (raw - raw.mean(0)) / np.sqrt(raw.var(0) + 1e-5)
+    original = softmax(z, axis=1)
+    np.testing.assert_allclose(compute_topic_gene_matrix(model, "cpu", sd_floor=0), original, rtol=1e-5, atol=2e-6)
+    scores = gene_importance_scores(pd.DataFrame(raw), sd_floor=0)
+    np.testing.assert_allclose(scores["downstream_softmax"], original, rtol=1e-10)
+    # The default adds the floor, so the scores differ from the original ones.
+    assert not np.allclose(compute_topic_gene_matrix(model, "cpu"), original, rtol=1e-3, atol=1e-6)
+
+
+def test_sd_floor_stops_a_near_constant_gene_from_leading():
+    rng = np.random.default_rng(3)
+    values = rng.normal(5, 1, size=(6, 40))
+    values[:, 0] = [0, 0, 0, 0, 0, 0.5]  # zero elsewhere, one small bump: the largest possible z-score
+    values[5, 1] = values[:, 1].mean() + 6  # a real, large difference in topic 5
+    raw = pd.DataFrame(values)
+    original = gene_importance_scores(raw, sd_floor=0)["across_topics_zscore"]
+    floored = gene_importance_scores(raw)["across_topics_zscore"]
+    assert original.loc[5].idxmax() == 0
+    assert floored.loc[5].idxmax() == 1
+    # Genes with typical spread keep (nearly) the same order: the floor matters only for small spreads.
+    typical = np.sqrt(values.var(0)) > np.median(np.sqrt(values.var(0)))
+    assert (np.argsort(original.loc[5].to_numpy()[typical]) == np.argsort(floored.loc[5].to_numpy()[typical])).mean() > 0.8
+
+
+@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf"), True, "0.5", None])
+def test_sd_floor_rejects_invalid_values(bad):
+    from scdori._core.downstream import compute_topic_gene_matrix
+    from scdori._core.models import scDoRI
+
+    with pytest.raises(ValueError, match="sd_floor"):
+        gene_importance_scores(pd.DataFrame(np.ones((2, 3))), sd_floor=bad)
+    model = scDoRI(torch.device("cpu"), 7, 11, 3, 4, 2, 9, 5)
+    with pytest.raises(ValueError, match="sd_floor"):
+        compute_topic_gene_matrix(model, "cpu", sd_floor=bad)
+
+
 def test_specific_gene_outweighs_shared_high_baseline_and_constant_is_zero():
     raw = pd.DataFrame(
         [[1000, 1, 7], [1001, 9, 7], [999, 1, 7], [1000, 1, 7]], columns=["broad", "specific", "constant"]

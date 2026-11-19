@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from .config import train_default
+
 
 @dataclass
 class TFExpressionPreview:
@@ -98,7 +100,7 @@ def preview_phase2_tfs(model, device, train_loader, rna, atac, num_cells, tf_ind
     """
     from .train_grn import (get_latent_topics, scale_topic_tf_expression, topic_tf_detection_filter,
                             topic_tf_expression_means)
-    from .topic_selection import resolve_grn_topics, sequential_loader
+    from .topic_selection import resolve_grn_topics, sequential_loader, shuffle_null_topics
 
     device = torch.device(device)
     cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
@@ -106,10 +108,14 @@ def preview_phase2_tfs(model, device, train_loader, rna, atac, num_cells, tf_ind
     try:
         with torch.random.fork_rng(devices=cuda_devices), torch.no_grad():
             loader = sequential_loader(train_loader)
-            theta = ids = selected_cells = detection = None
-            if config.tf_expression_mode in ("True", "actual") or config.grn_topic_selection == "live":
+            theta = ids = selected_cells = detection = null = None
+            if config.tf_expression_mode in ("True", "actual") or config.grn_topic_selection in ("live", "shuffle_null"):
                 theta, ids = get_latent_topics(model, device, loader, rna, atac, num_cells,
                                               tf_indices, onehot_batch, return_indices=True)
+            if config.grn_topic_selection == "shuffle_null":
+                # The same shuffled-cell test phase 2 runs (same training cells and seeds), so the preview shows the
+                # topics phase 2 will keep.
+                null = shuffle_null_topics(model, device, rna, atac, num_cells, tf_indices, onehot_batch, ids, theta, config)
             if config.tf_expression_mode in ("True", "actual"):
                 means, selected_cells = topic_tf_expression_means(theta, ids, rna, tf_indices, config.cells_per_topic)
                 values = torch.as_tensor(means, device=device, dtype=model.topic_tf_decoder.dtype)
@@ -122,7 +128,7 @@ def preview_phase2_tfs(model, device, train_loader, rna, atac, num_cells, tf_ind
             if selected_cells is not None:
                 detection, keep = topic_tf_detection_filter(selected_cells, rna, tf_indices, config)
                 values = values * torch.as_tensor(keep, device=device, dtype=values.dtype)
-            selected = resolve_grn_topics(model, config, theta)
+            selected = resolve_grn_topics(model, config, theta, null=null)
             if selected is not None:
                 selected = np.asarray(selected)
                 if (selected.ndim != 1 or selected.dtype.kind not in "iu" or not len(selected)
@@ -141,5 +147,6 @@ def preview_phase2_tfs(model, device, train_loader, rna, atac, num_cells, tf_ind
             module.training = training
     if detection is None:
         return TFExpressionPreview(frame, [f"Topic_{k}" for k in excluded])
+    floor = getattr(config, "tf_expression_min_detection", train_default("tf_expression_min_detection"))
     return TFExpressionPreview(frame, [f"Topic_{k}" for k in excluded], pd.DataFrame(detection, **labels), before,
-                               getattr(config, "tf_expression_min_detection", 0.0), selected_cells.shape[0])
+                               floor, selected_cells.shape[0])

@@ -3,6 +3,8 @@ from scdori._lazy import resolve_export
 _EXPORTS = {
     "ppConfig": (".config", "ppConfig"),
     "compute_in_silico_chipseq": (".correlation", "compute_in_silico_chipseq"),
+    "compute_in_silico_chipseq_weighted": (".correlation", "compute_in_silico_chipseq_weighted"),
+    "averaged_metacell_correlation": (".correlation", "averaged_metacell_correlation"),
     "metacell_correlation_matrices": (".correlation", "metacell_correlation_matrices"),
     "create_dir_if_not_exists": (".data_io", "create_dir_if_not_exists"),
     "load_anndata": (".data_io", "load_anndata"),
@@ -15,6 +17,8 @@ _EXPORTS = {
     "load_gtf": (".gene_selection", "load_gtf"),
     "create_metacells": (".metacells", "create_metacells"),
     "compute_motif_scores": (".motif_scanning", "compute_motif_scores"),
+    "compute_motif_pvalues": (".motif_scanning", "compute_motif_pvalues"),
+    "motif_pvalue_floor": (".motif_scanning", "motif_pvalue_floor"),
     "load_motif_database": (".motif_scanning", "load_motif_database"),
     "run_bedtools_intersect": (".motif_scanning", "run_bedtools_intersect"),
     "keep_promoters_and_select_hv_peaks": (".peak_selection", "keep_promoters_and_select_hv_peaks"),
